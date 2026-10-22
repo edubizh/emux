@@ -14,9 +14,9 @@
 # order is a full permutation of the panes, the cycle always visits every pane
 # exactly once per lap and can never get stuck, on any layout.
 #
-# Usage (from tmux):
-#   bind -n M-Tab run-shell "$HOME/.config/emux/bin/emux-pane-cycle"       # next
-#   bind -n M-S-Tab run-shell "$HOME/.config/emux/bin/emux-pane-cycle -r"  # prev
+# Bound by emux.tmux (the TPM entry point), which passes this script's own path:
+#   tmux bind-key -n M-Tab run-shell "$CURRENT_DIR/bin/emux-pane-cycle"       # next
+#   tmux bind-key -n M-S-Tab run-shell "$CURRENT_DIR/bin/emux-pane-cycle -r"  # prev (optional)
 #
 # Testing hooks (used by the repo's checks; harmless in normal use):
 #   EMUX_CUR=<id>     override the current pane id
