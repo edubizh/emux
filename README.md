@@ -2,9 +2,10 @@
 
 **🎮 video game settings — but for tmux**
 
-Eli Dubizh's personal [tmux](https://github.com/tmux/tmux) config. Fast,
-**prefix-free** keybindings for splitting, navigating, and resizing panes — copy
-it and tmux starts to feel like a tiling window manager you drive with one hand.
+Eli Dubizh's personal [tmux](https://github.com/tmux/tmux) setup, packaged as a
+plugin. Fast, **prefix-free** keybindings for splitting, navigating, and resizing
+panes — add it and tmux starts to feel like a tiling window manager you drive
+with one hand.
 
 Anyone is welcome to use it.
 
@@ -17,17 +18,20 @@ Anyone is welcome to use it.
 
 ## Install
 
-```sh
-git clone https://github.com/edubizh/emux.git
-cd emux
-./install.sh
-tmux source-file ~/.tmux.conf   # or just restart tmux
+emux is a [TPM](https://github.com/tmux-plugins/tpm) plugin. If you don't have
+TPM yet, install it first (one command — see its README).
+
+Then add emux to your `~/.tmux.conf` and press `prefix + I` to fetch it. A
+minimal config looks like:
+
+```tmux
+set -g @plugin 'tmux-plugins/tpm'
+set -g @plugin 'edubizh/emux'
+
+run '~/.tmux/plugins/tpm/tpm'   # keep this line last
 ```
 
-`install.sh` copies `.tmux.conf` to `~/.tmux.conf` and the helper scripts to
-`~/.config/emux/`. Prefer to do it by hand? Just `cp .tmux.conf ~/.tmux.conf` —
-everything works, except `⌥ Tab` falls back to tmux's plain next-pane instead of
-the clockwise cycle until the helper is installed.
+Reload tmux and every binding below is live — no extra prefix needed to use them.
 
 ## Keybindings
 
