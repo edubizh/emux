@@ -18,9 +18,16 @@ Anyone is welcome to use it.
 ## Install
 
 ```sh
-cp .tmux.conf ~/.tmux.conf
+git clone https://github.com/edubizh/emux.git
+cd emux
+./install.sh
 tmux source-file ~/.tmux.conf   # or just restart tmux
 ```
+
+`install.sh` copies `.tmux.conf` to `~/.tmux.conf` and the helper scripts to
+`~/.config/emux/`. Prefer to do it by hand? Just `cp .tmux.conf ~/.tmux.conf` —
+everything works, except `⌥ Tab` falls back to tmux's plain next-pane instead of
+the clockwise cycle until the helper is installed.
 
 ## Keybindings
 
@@ -63,16 +70,21 @@ emux replaces it with a **position-aware** cycle that walks the edges clockwise:
  BL ◀── BR
 ```
 
-It decides where to go from *where the pane sits*, not from its number:
+### How it works (and why it never gets stuck)
 
-- on the **top** edge and not yet at the right → move **right**
-- on the **right** edge and not yet at the bottom → move **down**
-- on the **bottom** edge and not yet at the left → move **left**
-- otherwise (on the **left** edge) → move **up**
+An earlier version walked the edges with tmux's directional moves
+(`select-pane -L/-R/-U/-D`). That looks right on a clean grid but **breaks on
+irregular layouts**: directional moves can form a 2-cycle, so `⌥ Tab` gets
+*stuck* bouncing between two panes and never reaches the rest. (Repro: in a 2×2,
+drag the top-right pane left until it overlaps the bottom-left one — the old
+cycle traps itself between those two.)
 
-Because it navigates by position, it's immune to pane renumbering and to the
-`⌥ =` snap, so the cycle always feels the same. It's exact on a grid and walks
-the edges sensibly on irregular layouts too.
+The fix orders panes by the **angle of each pane's center around the window
+center**, then steps to the next pane in that clockwise order, wrapping at the
+end. Because that order is a full permutation of the panes, the cycle **always
+visits every pane exactly once per lap and can never get stuck** — on any
+layout. It also stays immune to pane renumbering and to the `⌥ =` snap. It's
+handled by the helper [`bin/emux-pane-cycle`](bin/emux-pane-cycle).
 
 ---
 

@@ -1,0 +1,85 @@
+#!/bin/sh
+# emux-pane-cycle — move to the next pane CLOCKWISE around the window.
+#
+# Why this exists
+# ---------------
+# tmux's directional navigation (select-pane -L/-R/-U/-D) can form sub-cycles on
+# irregular layouts. An edge-walking "clockwise" binding built on it can get
+# STUCK bouncing between two panes and never visit the rest. (Repro: in a 2x2,
+# drag the top-right pane left until it overlaps the bottom-left pane.)
+#
+# This avoids directional moves entirely. It computes a stable CLOCKWISE ORDER
+# of every pane — by the angle of each pane's center around the window center —
+# and jumps to the next pane in that order, wrapping at the end. Because the
+# order is a full permutation of the panes, the cycle always visits every pane
+# exactly once per lap and can never get stuck, on any layout.
+#
+# Usage (from tmux):
+#   bind -n M-Tab run-shell "$HOME/.config/emux/bin/emux-pane-cycle"       # next
+#   bind -n M-S-Tab run-shell "$HOME/.config/emux/bin/emux-pane-cycle -r"  # prev
+#
+# Testing hooks (used by the repo's checks; harmless in normal use):
+#   EMUX_CUR=<id>     override the current pane id
+#   EMUX_PANES=<text> override the pane list (lines: "<id> <left> <top> <w> <h>")
+#   EMUX_PRINT=1      print the target pane id instead of selecting it
+
+dir="${1:-}"
+
+if [ -n "${EMUX_CUR:-}" ]; then
+	cur="$EMUX_CUR"
+else
+	cur=$(tmux display-message -p '#{pane_id}')
+fi
+
+if [ -n "${EMUX_PANES:-}" ]; then
+	panes="$EMUX_PANES"
+else
+	panes=$(tmux list-panes -F '#{pane_id} #{pane_left} #{pane_top} #{pane_width} #{pane_height}')
+fi
+
+next=$(printf '%s\n' "$panes" | awk -v cur="$cur" -v rev="$dir" '
+	{
+		id[NR] = $1
+		cx[NR] = $2 + $4 / 2          # pane center x
+		cy[NR] = $3 + $5 / 2          # pane center y
+		l = $2; r = $2 + $4; t = $3; b = $3 + $5
+		if (NR == 1 || l < minx) minx = l
+		if (NR == 1 || r > maxx) maxx = r
+		if (NR == 1 || t < miny) miny = t
+		if (NR == 1 || b > maxy) maxy = b
+		n = NR
+	}
+	END {
+		if (n <= 1) { print cur; exit }
+		ox = (minx + maxx) / 2        # window center x
+		oy = (miny + maxy) / 2        # window center y
+		PI = 3.14159265358979
+		for (i = 1; i <= n; i++) {
+			# clockwise angle from straight up: atan2(dx, up)
+			a = atan2(cx[i] - ox, oy - cy[i])
+			if (a < 0) a += 2 * PI
+			ang[i] = a
+			ord[i] = i
+		}
+		# insertion sort indices by angle; tie-break by id for a stable total order
+		for (i = 2; i <= n; i++) {
+			k = ord[i]; j = i - 1
+			while (j >= 1 && (ang[ord[j]] > ang[k] || (ang[ord[j]] == ang[k] && id[ord[j]] > id[k]))) {
+				ord[j + 1] = ord[j]; j--
+			}
+			ord[j + 1] = k
+		}
+		p = 0
+		for (i = 1; i <= n; i++) if (id[ord[i]] == cur) p = i
+		if (p == 0) { print id[ord[1]]; exit }
+		if (rev == "-r") nx = (p == 1 ? n : p - 1)
+		else             nx = (p % n) + 1
+		print id[ord[nx]]
+	}
+')
+
+if [ "${EMUX_PRINT:-}" = 1 ]; then
+	printf '%s\n' "$next"
+elif [ -n "$next" ]; then
+	tmux select-pane -t "$next"
+fi
