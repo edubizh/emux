@@ -2,6 +2,10 @@
 
 **🎮 video game settings — but for tmux**
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![version](https://img.shields.io/github/v/tag/edubizh/emux?label=version&sort=semver)](https://github.com/edubizh/emux/releases)
+[![install: TPM](https://img.shields.io/badge/install-TPM-1f6feb.svg)](https://github.com/tmux-plugins/tpm)
+
 Eli Dubizh's personal [tmux](https://github.com/tmux/tmux) setup, packaged as a
 plugin. Fast, **prefix-free** keybindings for splitting, navigating, and resizing
 panes — add it and tmux starts to feel like a tiling window manager you drive
@@ -90,8 +94,29 @@ visits every pane exactly once per lap and can never get stuck** — on any
 layout. It also stays immune to pane renumbering and to the `⌥ =` snap. It's
 handled by the helper [`bin/emux-pane-cycle`](bin/emux-pane-cycle).
 
+## Versioning
+
+emux follows [Semantic Versioning](https://semver.org). The keybindings are the
+public API: a **major** bump changes or removes an existing binding, a **minor**
+adds one, and a **patch** is a fix or docs change. Want a frozen set? Pin a tag:
+
+```tmux
+set -g @plugin 'edubizh/emux#v1.0.0'
+```
+
+See [CHANGELOG.md](CHANGELOG.md) for what changed and when.
+
+## Contributing
+
+PRs welcome — read [CONTRIBUTING.md](CONTRIBUTING.md) first (commit style,
+branches, releases). The golden rule: keep bindings stable — muscle memory is
+the product.
+
+## License
+
+[MIT](LICENSE) © Eli Dubizh. Use it, fork it, make it your own.
+
 ---
 
-> **Note — coming soon:** emux will become an installable package, so anyone can
-> run a single command and get my version of tmux. More of my keyboard and
-> terminal configs will land here over time.
+> More of my keyboard and terminal configs will land here over time — this is
+> the start of a tmux "distro," not the end of it.
