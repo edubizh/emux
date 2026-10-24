@@ -18,6 +18,7 @@ emux is a tmux plugin: prefix-free Option-key bindings, installed via TPM.
 ## Layout
 - `emux.tmux` — TPM entry point; installs all keybindings.
 - `bin/emux-pane-cycle` — clockwise pane cycle (angle-sorted; always complete).
+- `bin/emux-resize-wall` — move a vertical wall as a unit (a column resizes together).
 
 ## Full rules
 See [CONTRIBUTING.md](CONTRIBUTING.md) (policy) and [CHANGELOG.md](CHANGELOG.md) (history).
