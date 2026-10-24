@@ -6,6 +6,11 @@ All notable changes to emux are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- `⌥ Shift ;` / `⌥ Shift '` — move a whole vertical wall together, so a column of
+  panes (e.g. both right panes of a 2×2) resizes in sync and the grid stays
+  aligned instead of going jagged. Powered by `bin/emux-resize-wall`.
+
 ## [1.0.0] - 2026-10-22
 
 First stable release. The binding set below is now a public contract — changing

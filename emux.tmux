@@ -22,5 +22,12 @@ tmux bind-key -n "M-'" resize-pane -R 5
 tmux bind-key -n M-Up   resize-pane -U 5
 tmux bind-key -n M-Down resize-pane -D 5
 
+# --- Resize a whole vertical wall together, keeping a grid aligned ---
+# Option+Shift+; / Option+Shift+'  (i.e. M-: / M-") move every pane sharing the
+# wall, so e.g. both right-column panes of a 2x2 slide together. See
+# bin/emux-resize-wall.
+tmux bind-key -n "M-:" run-shell "$CURRENT_DIR/bin/emux-resize-wall L"
+tmux bind-key -n 'M-"' run-shell "$CURRENT_DIR/bin/emux-resize-wall R"
+
 # --- Snap panes back to an even 2x2 grid ---
 tmux bind-key -n M-= select-layout tiled

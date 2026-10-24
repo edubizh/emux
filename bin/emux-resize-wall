@@ -1,0 +1,63 @@
+#!/bin/sh
+# emux-resize-wall — move the vertical wall next to the active pane as ONE unit,
+# so a whole column of panes resizes together and the grid stays aligned.
+#
+# Why this exists
+# ---------------
+# Plain `resize-pane -L/-R` moves only the active pane's border. In a 2x2 that
+# drags the top divider while the bottom one stays put, leaving a jagged grid.
+# This resizes every pane that shares the target wall, by the same amount, so
+# the wall stays straight and both (or all) stacked panes move together.
+#
+# How it picks the wall
+# ---------------------
+# Panes in the same column share an exact left edge. The target column is the
+# one whose left edge is the active pane's — unless the active pane is in the
+# leftmost column (left edge 0), in which case the next column to the right is
+# used. Moving that column's left edge moves the shared vertical wall; the
+# column on the other side follows automatically.
+#
+# Usage (bound by emux.tmux):
+#   emux-resize-wall L [n]   # move the wall left  n cells (default 5)
+#   emux-resize-wall R [n]   # move the wall right n cells
+#
+# Test hooks (used by the repo's checks; harmless in normal use):
+#   EMUX_PANES  override the pane list (lines: "<id> <left> <top> <width> <active>")
+#   EMUX_PRINT=1  print the target pane ids instead of resizing them
+
+dir="$1"
+amount="${2:-5}"
+case "$dir" in
+	L | R) ;;
+	*) echo "usage: emux-resize-wall <L|R> [n]" >&2; exit 2 ;;
+esac
+
+if [ -n "${EMUX_PANES:-}" ]; then
+	panes="$EMUX_PANES"
+else
+	panes=$(tmux list-panes -F '#{pane_id} #{pane_left} #{pane_top} #{pane_width} #{pane_active}')
+fi
+
+targets=$(printf '%s\n' "$panes" | awk '
+	{ id[NR] = $1; left[NR] = $2; n = NR; if ($5 == 1) active_left = $2 }
+	END {
+		if (n <= 1) exit
+		wall = active_left
+		if (wall == 0) {                 # active is in the leftmost column:
+			wall = -1                    # move the next wall to the right
+			for (i = 1; i <= n; i++)
+				if (left[i] > 0 && (wall < 0 || left[i] < wall)) wall = left[i]
+			if (wall < 0) exit           # only one column — no vertical wall
+		}
+		for (i = 1; i <= n; i++) if (left[i] == wall) print id[i]
+	}')
+
+[ -z "$targets" ] && exit 0
+
+if [ "${EMUX_PRINT:-}" = 1 ]; then
+	printf '%s\n' "$targets"
+else
+	printf '%s\n' "$targets" | while IFS= read -r t; do
+		[ -n "$t" ] && tmux resize-pane -t "$t" -"$dir" "$amount"
+	done
+fi

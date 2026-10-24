@@ -61,6 +61,8 @@ New panes open in the current pane's working directory.
 | `⌥ '` | Resize right |
 | `⌥ ↑` | Resize up |
 | `⌥ ↓` | Resize down |
+| `⌥ ⇧ ;` | Move the whole vertical wall **left** — a column of panes resizes together, grid stays aligned |
+| `⌥ ⇧ '` | Move the whole vertical wall **right** |
 | `⌥ =` | Snap all panes back to an even 2×2 grid |
 
 ## The clockwise `⌥ Tab` — "walking the edges"
