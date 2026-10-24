@@ -1,28 +1,21 @@
 #!/bin/sh
-# emux-resize-wall — move the vertical wall next to the active pane as ONE unit,
-# so a whole column of panes resizes together and the grid stays aligned.
+# emux-resize-wall — resize the active pane and its vertically-stacked column
+# companions together, so a whole column moves as one. Panes do NOT have to be
+# perfectly aligned: this works for jagged/offset grids, not just a clean 2x2.
 #
-# Why this exists
-# ---------------
-# Plain `resize-pane -L/-R` moves only the active pane's border. In a 2x2 that
-# drags the top divider while the bottom one stays put, leaving a jagged grid.
-# This resizes every pane that shares the target wall, by the same amount, so
-# the wall stays straight and both (or all) stacked panes move together.
-#
-# How it picks the wall
-# ---------------------
-# Panes in the same column share an exact left edge. The target column is the
-# one whose left edge is the active pane's — unless the active pane is in the
-# leftmost column (left edge 0), in which case the next column to the right is
-# used. Moving that column's left edge moves the shared vertical wall; the
-# column on the other side follows automatically.
+# A companion is a pane in a DIFFERENT row (vertical ranges don't overlap) whose
+# horizontal span lines up with the active pane's — i.e. one's horizontal
+# midpoint falls within the other's width. Resizing the active pane and all its
+# companions the same way moves their shared vertical wall together; the panes
+# on the far side of the wall follow automatically.
 #
 # Usage (bound by emux.tmux):
 #   emux-resize-wall L [n]   # move the wall left  n cells (default 5)
 #   emux-resize-wall R [n]   # move the wall right n cells
 #
 # Test hooks (used by the repo's checks; harmless in normal use):
-#   EMUX_PANES  override the pane list (lines: "<id> <left> <top> <width> <active>")
+#   EMUX_PANES  override the pane list
+#               (lines: "<id> <left> <top> <width> <height> <active>")
 #   EMUX_PRINT=1  print the target pane ids instead of resizing them
 
 dir="$1"
@@ -35,21 +28,29 @@ esac
 if [ -n "${EMUX_PANES:-}" ]; then
 	panes="$EMUX_PANES"
 else
-	panes=$(tmux list-panes -F '#{pane_id} #{pane_left} #{pane_top} #{pane_width} #{pane_active}')
+	panes=$(tmux list-panes -F '#{pane_id} #{pane_left} #{pane_top} #{pane_width} #{pane_height} #{pane_active}')
 fi
 
 targets=$(printf '%s\n' "$panes" | awk '
-	{ id[NR] = $1; left[NR] = $2; n = NR; if ($5 == 1) active_left = $2 }
+	{
+		id[NR] = $1; left[NR] = $2; top[NR] = $3
+		right[NR] = $2 + $4 - 1; bottom[NR] = $3 + $5 - 1; midx[NR] = $2 + $4 / 2
+		n = NR
+		if ($6 == 1) a = NR
+	}
 	END {
 		if (n <= 1) exit
-		wall = active_left
-		if (wall == 0) {                 # active is in the leftmost column:
-			wall = -1                    # move the next wall to the right
-			for (i = 1; i <= n; i++)
-				if (left[i] > 0 && (wall < 0 || left[i] < wall)) wall = left[i]
-			if (wall < 0) exit           # only one column — no vertical wall
+		if (a == 0) a = 1
+		for (i = 1; i <= n; i++) {
+			take = 0
+			if (i == a)
+				take = 1
+			else if (top[i] > bottom[a] || bottom[i] < top[a])   # different row
+				if ((midx[i] >= left[a] && midx[i] <= right[a]) ||
+				    (midx[a] >= left[i] && midx[a] <= right[i]))  # columns line up
+					take = 1
+			if (take) print id[i]
 		}
-		for (i = 1; i <= n; i++) if (left[i] == wall) print id[i]
 	}')
 
 [ -z "$targets" ] && exit 0
