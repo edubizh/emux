@@ -7,9 +7,10 @@ All notable changes to emux are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
-- `⌥ Shift ;` / `⌥ Shift '` — move a whole vertical wall together, so a column of
-  panes (e.g. both right panes of a 2×2) resizes in sync and the grid stays
-  aligned instead of going jagged. Powered by `bin/emux-resize-wall`.
+- `⌥ Shift ;` / `⌥ Shift '` — move a whole vertical wall together: the active pane
+  and its stacked column companions resize as one, so a column (e.g. both right
+  panes of a 2×2) moves in sync. Works even when panes are offset or the grid is
+  jagged — not just a clean 2×2. Powered by `bin/emux-resize-wall`.
 
 ## [1.0.0] - 2026-10-22
 
