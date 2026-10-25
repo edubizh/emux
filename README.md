@@ -65,6 +65,32 @@ New panes open in the current pane's working directory.
 | `⌥ ⇧ '` | Move the whole vertical wall **right** |
 | `⌥ =` | Snap all panes back to an even 2×2 grid |
 
+#### Why `↑ / ↓` has no "move together" twin (and why that's a tmux law, not a gap)
+
+A reasonable wish: make `⌥ ↑ / ↓` resize *just the active pane* and add `⌥ ⇧ ↑ / ↓`
+to move the whole horizontal wall together — a perfect mirror of `;` / `'`. **tmux
+can't do it**, and it's worth knowing why.
+
+tmux always slices the screen into **two halves first**, then subdivides each half.
+That first slice is a single shared wall. So in *any* 2×2, one of the two middle
+walls is one shared edge and the other is two independent edges — you get "resize
+separately" on **exactly one axis** and "moves together" on the other. Both axes
+separate is not a layout tmux can represent.
+
+The default grid (`⌥ =`, and the usual "split stacked, then side-by-side" flow)
+slices **top/bottom first**, so:
+
+- the **side** walls are independent → `⌥ ;` / `⌥ '` nudge one pane (separate), and
+  `⌥ ⇧ ;` / `⌥ ⇧ '` sweep the whole column wall together.
+- the **top/bottom** wall is the shared one → `⌥ ↑` / `⌥ ↓` already move the entire
+  wall (the two top panes are pinned to the same height, so there is no separate
+  edge to grab). A `⌥ ⇧ ↑ / ↓` would do exactly what `⌥ ↑ / ↓` already does, so it
+  doesn't exist.
+
+Want the opposite? Build the grid **side-by-side first** (`⌥ .`, then `⌥ ,` inside
+each column) and the whole thing transposes: now `↑ / ↓` resize separately and
+`; / '` move together.
+
 ## The clockwise `⌥ Tab` — "walking the edges"
 
 Stock tmux cycles panes by their *creation number*. In a 2×2 grid that order
