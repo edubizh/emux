@@ -14,10 +14,11 @@ All notable changes to emux are documented here. The format is based on
 
 ### Changed
 - `⌥ =` now **rotates panes through the grid** on repeat presses. The first
-  press still snaps to the even grid exactly as before (unchanged muscle
-  memory); once the grid is already even, each further press slides every pane
-  one cell (top-left → top-right, wrapping around) while keeping the grid, so
-  you can shuffle which pane sits where without re-splitting. Powered by
+  press snaps to an even layout — **two panes go side by side** (left/right,
+  rather than tmux's default top/bottom stack), three or more fill the grid —
+  and once the layout is already even, each further press slides every pane one
+  cell (top-left → top-right, wrapping around) while keeping the layout, so you
+  can shuffle which pane sits where without re-splitting. Powered by
   `bin/emux-grid-rotate`.
 
 ### Fixed
