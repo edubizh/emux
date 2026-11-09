@@ -63,7 +63,7 @@ New panes open in the current pane's working directory.
 | `⌥ ↓` | Resize down |
 | `⌥ ⇧ ;` | Move the whole vertical wall **left** — a column of panes resizes together (even if offset/jagged) |
 | `⌥ ⇧ '` | Move the whole vertical wall **right** |
-| `⌥ =` | Snap all panes back to an even 2×2 grid |
+| `⌥ =` | Snap all panes back to an even grid — **press again to rotate** panes through the cells |
 
 #### Why `↑ / ↓` has no "move together" twin (and why that's a tmux law, not a gap)
 
@@ -90,6 +90,21 @@ slices **top/bottom first**, so:
 Want the opposite? Build the grid **side-by-side first** (`⌥ .`, then `⌥ ,` inside
 each column) and the whole thing transposes: now `↑ / ↓` resize separately and
 `; / '` move together.
+
+## The `⌥ =` grid — tidy, then shuffle
+
+`⌥ =` is two gestures in one key:
+
+- **First press** snaps every pane back to an even grid — the classic "clean this
+  up" (unchanged from before).
+- **Press it again** once the grid is already even and it **rotates the panes
+  through the cells**: each pane's contents slide one slot (top-left → top-right,
+  wrapping around) while the grid itself stays put. Keep tapping to walk a pane
+  around the screen without re-splitting.
+
+The trick is that snapping an already-even grid is a no-op, so emux uses that to
+tell "the layout was messy, just tidy it" apart from "already tidy, so rotate."
+Handled by [`bin/emux-grid-rotate`](bin/emux-grid-rotate).
 
 ## The clockwise `⌥ Tab` — "walking the edges"
 
