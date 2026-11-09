@@ -17,7 +17,10 @@ tmux bind-key -n M-, split-window -v -c "#{pane_current_path}"   # stacked
 tmux bind-key -n M-Tab run-shell "$CYCLE"
 
 # --- Resize panes (no prefix) ---
-tmux bind-key -n "M-;" resize-pane -L 5
+# NB: ';' is tmux's command separator, so an unescaped "M-;" ends the bind-key
+# command early ("unknown key: M-") and the binding is silently dropped. Escape
+# it as 'M-\;' so tmux binds the Option+; key instead of splitting the command.
+tmux bind-key -n 'M-\;' resize-pane -L 5
 tmux bind-key -n "M-'" resize-pane -R 5
 tmux bind-key -n M-Up   resize-pane -U 5
 tmux bind-key -n M-Down resize-pane -D 5

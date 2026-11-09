@@ -12,6 +12,12 @@ All notable changes to emux are documented here. The format is based on
   panes of a 2×2) moves in sync. Works even when panes are offset or the grid is
   jagged — not just a clean 2×2. Powered by `bin/emux-resize-wall`.
 
+### Fixed
+- `⌥ ;` (resize left) now actually works. The binding was silently dropped
+  because `;` is tmux's command separator: the unescaped key ended the
+  `bind-key` command early (`unknown key: M-`), so only `⌥ '` (resize right)
+  ever installed. Escaping it (`M-\;`) registers the binding.
+
 ## [1.0.0] - 2026-10-22
 
 First stable release. The binding set below is now a public contract — changing
