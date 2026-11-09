@@ -1,0 +1,38 @@
+#!/bin/sh
+# emux-grid-rotate — the ⌥= key. Snap panes to an even grid and, on repeat
+# presses, rotate the panes through the grid cells so their contents slide one
+# slot (e.g. top-left -> top-right) while the grid itself stays put.
+#
+# How it decides "tidy" vs "rotate":
+#   A press always snaps to the even `tiled` layout. If that snap CHANGED the
+#   layout, the window was messy/custom — so the snap itself was the action and
+#   we stop (this is exactly the old ⌥= behavior, unchanged). If the snap was a
+#   no-op, the window was ALREADY an even grid, so we rotate the panes one cell
+#   instead. That makes the first press from any layout "tidy up" and every
+#   subsequent press "slide the panes around the grid."
+#
+# Rotation keeps the layout: rotate-window moves pane CONTENTS between the fixed
+# grid cells, so the grid stays even and only who-sits-where changes.
+#
+# Test hook (harmless in normal use):
+#   EMUX_PRINT=1  print the action it took (tidy|rotate) instead of rotating;
+#                 it still performs the snap, since that is how the state is read.
+
+before=$(tmux display-message -p '#{window_layout}')
+tmux select-layout tiled
+after=$(tmux display-message -p '#{window_layout}')
+
+if [ "$before" = "$after" ]; then
+	action=rotate
+else
+	action=tidy
+fi
+
+if [ "${EMUX_PRINT:-}" = 1 ]; then
+	printf '%s\n' "$action"
+	exit 0
+fi
+
+[ "$action" = rotate ] && tmux rotate-window -D
+
+exit 0
