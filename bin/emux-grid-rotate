@@ -3,13 +3,17 @@
 # presses, rotate the panes through the grid cells so their contents slide one
 # slot (e.g. top-left -> top-right) while the grid itself stays put.
 #
+# The even arrangement is the `tiled` grid — EXCEPT for exactly two panes, where
+# tmux's tiled stacks them top/bottom; a pair reads better side by side, so we
+# snap two panes to `even-horizontal` (left/right) instead.
+#
 # How it decides "tidy" vs "rotate":
-#   A press always snaps to the even `tiled` layout. If that snap CHANGED the
-#   layout, the window was messy/custom — so the snap itself was the action and
-#   we stop (this is exactly the old ⌥= behavior, unchanged). If the snap was a
-#   no-op, the window was ALREADY an even grid, so we rotate the panes one cell
-#   instead. That makes the first press from any layout "tidy up" and every
-#   subsequent press "slide the panes around the grid."
+#   A press always snaps to that even layout. If the snap CHANGED the layout, the
+#   window was messy/custom — so the snap itself was the action and we stop (this
+#   is exactly the old ⌥= behavior, unchanged). If the snap was a no-op, the
+#   window was ALREADY even, so we rotate the panes one cell instead. That makes
+#   the first press from any layout "tidy up" and every subsequent press "slide
+#   the panes around the grid."
 #
 # Rotation keeps the layout: rotate-window moves pane CONTENTS between the fixed
 # grid cells, so the grid stays even and only who-sits-where changes.
@@ -18,8 +22,14 @@
 #   EMUX_PRINT=1  print the action it took (tidy|rotate) instead of rotating;
 #                 it still performs the snap, since that is how the state is read.
 
+if [ "$(tmux display-message -p '#{window_panes}')" = 2 ]; then
+	grid=even-horizontal
+else
+	grid=tiled
+fi
+
 before=$(tmux display-message -p '#{window_layout}')
-tmux select-layout tiled
+tmux select-layout "$grid"
 after=$(tmux display-message -p '#{window_layout}')
 
 if [ "$before" = "$after" ]; then
