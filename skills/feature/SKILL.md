@@ -41,7 +41,10 @@ the version per PR.
 6. **Docs.** `CHANGELOG.md` under `## [Unreleased]`; the README keybinding table;
    the `AGENTS.md` layout list if you added a file.
 7. **Commit.** Conventional Commit(s) — one per genuinely separate task, else one.
-   `chmod +x` any new script so the executable bit is tracked.
+   `chmod +x` any new script so the executable bit is tracked. Commit under the
+   user's identity only — **no AI co-author or attribution trailers** (no
+   `Co-Authored-By: Claude …`, no "Generated with …" footer). The history is the
+   user's footprints alone.
 8. **PR → CI → merge.** Push, `gh pr create` (fill the PR template), watch
    `gh pr checks <n> --watch`, and only when green:
    `gh pr merge <n> --squash --delete-branch`. Then sync `main`.

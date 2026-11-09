@@ -38,7 +38,10 @@ change — flag it, don't sneak it in. Never commit to `main`; everything via a 
    the feature's `### Added` entry if it was never released). Update the README if
    the described behavior changed.
 7. **Commit.** `fix(<scope>): …` Conventional Commit(s) — one per genuinely
-   separate cause. `chmod +x` any touched script.
+   separate cause. `chmod +x` any touched script. Commit under the user's
+   identity only — **no AI co-author or attribution trailers** (no
+   `Co-Authored-By: Claude …`, no "Generated with …" footer); the history is the
+   user's footprints alone.
 8. **PR → CI → merge.** Push, `gh pr create` (fill the template), watch
    `gh pr checks <n> --watch`, and only when green:
    `gh pr merge <n> --squash --delete-branch`. Then sync `main`.
