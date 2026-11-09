@@ -8,6 +8,7 @@
 
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 CYCLE="$CURRENT_DIR/bin/emux-pane-cycle"
+GRID_ROTATE="$CURRENT_DIR/bin/emux-grid-rotate"
 
 # --- Split panes (no prefix) ---
 tmux bind-key -n M-. split-window -h -c "#{pane_current_path}"   # side by side
@@ -32,5 +33,8 @@ tmux bind-key -n M-Down resize-pane -D 5
 tmux bind-key -n "M-:" run-shell "$CURRENT_DIR/bin/emux-resize-wall L"
 tmux bind-key -n 'M-"' run-shell "$CURRENT_DIR/bin/emux-resize-wall R"
 
-# --- Snap panes back to an even 2x2 grid ---
-tmux bind-key -n M-= select-layout tiled
+# --- Snap panes to an even grid; press again to rotate panes through the cells ---
+# First press tidies to the even `tiled` grid (as before); once it's already
+# even, each press rotates the panes one cell so their contents slide around the
+# grid while the layout stays put. See bin/emux-grid-rotate.
+tmux bind-key -n M-= run-shell "$GRID_ROTATE"

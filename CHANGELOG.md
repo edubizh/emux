@@ -12,6 +12,14 @@ All notable changes to emux are documented here. The format is based on
   panes of a 2×2) moves in sync. Works even when panes are offset or the grid is
   jagged — not just a clean 2×2. Powered by `bin/emux-resize-wall`.
 
+### Changed
+- `⌥ =` now **rotates panes through the grid** on repeat presses. The first
+  press still snaps to the even grid exactly as before (unchanged muscle
+  memory); once the grid is already even, each further press slides every pane
+  one cell (top-left → top-right, wrapping around) while keeping the grid, so
+  you can shuffle which pane sits where without re-splitting. Powered by
+  `bin/emux-grid-rotate`.
+
 ### Fixed
 - `⌥ ;` (resize left) now actually works. The binding was silently dropped
   because `;` is tmux's command separator: the unescaped key ended the
