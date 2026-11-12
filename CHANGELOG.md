@@ -8,8 +8,8 @@ All notable changes to emux are documented here. The format is based on
 
 ### Added
 - `bin/emux-ticker <PAIR>` — a live crypto price dashboard for a single pane: a
-  big figlet banner of the asset (green up / red down), the price, 24h % change
-  and volume. The price is the **median of three exchange websocket feeds**
+  big figlet banner of the asset (green up / red down), the price, the `24h`-labelled
+  % change, and 24h volume in USD. The price is the **median of three exchange websocket feeds**
   (Gemini, Coinbase, Kraken), so it keeps working if one vendor drops — a health
   line shows how many are live (`3/3`). 24h %/volume come from Gemini REST. Free,
   no API keys. Run it in several split panes to watch multiple assets at once.

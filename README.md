@@ -152,7 +152,7 @@ emux-ticker ethusd 10     # Ethereum, refresh 24h stats every 10s
 ```
 
 Each pane shows a big figlet banner of the ticker (green when up on the day, red
-when down), the price, the 24h % change, and 24h volume:
+when down), the price, the 24h % change, and 24h volume in USD:
 
 ```
  ____ _____ ____
@@ -161,8 +161,8 @@ when down), the price, the 24h % change, and 24h volume:
 | |_) || || |___
 |____/ |_| \____|
 
-  $73,641.30   ▲ +0.64%
-  Vol  154.44 BTC
+  $73,641.30   ▲ +0.64% 24h
+  Vol  $26.98M
   median · 3/3 live
 ```
 

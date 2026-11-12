@@ -160,10 +160,12 @@ render() {
 	*) col=$GREEN arrow='▲' pctd=$(pctfmt "$_pct") ;;
 	esac
 	if [ -n "$_price" ]; then priced='$'$(commafy "$_price"); else priced='—'; fi
-	if [ -n "$_vol" ]; then vold="$(abbr "$_vol") $BASE"; else vold='—'; fi
+	if [ -n "$_vol" ]; then vold='$'$(abbr "$_vol"); else vold='—'; fi
+	tf=''
+	[ -n "$_pct" ] && tf=" ${DIM}24h${RESET}" # label the % with its timeframe
 
 	printf '%s%s%s%s\n\n' "$C_HOME" "$col" "$BANNER" "$RESET"
-	printf '  %s%s   %s %s%s%s\n' "$col" "$priced" "$arrow" "$pctd" "$RESET" "$C_EOL"
+	printf '  %s%s   %s %s%s%s%s\n' "$col" "$priced" "$arrow" "$pctd" "$RESET" "$tf" "$C_EOL"
 	printf '  %sVol  %s%s%s\n' "$DIM" "$vold" "$RESET" "$C_EOL"
 	[ -n "$_health" ] && printf '  %s%s%s%s\n' "$DIM" "$_health" "$RESET" "$C_EOL"
 	printf '%s' "$C_EOS"
@@ -201,7 +203,7 @@ v_filter() { # jq filter: raw ws lines -> price
 poll_state() {
 	_pt=$(curl -s --max-time 10 -H "User-Agent: $UA" "$API/pubticker/$pair")
 	_pf=$(curl -s --max-time 10 -H "User-Agent: $UA" "$API/pricefeed")
-	_vol=$(printf '%s' "$_pt" | jq -r --arg b "$BASE" '.volume[$b] // empty' 2>/dev/null)
+	_vol=$(printf '%s' "$_pt" | jq -r --arg q "$QUOTE" '.volume[$q] // empty' 2>/dev/null)
 	_pct=$(printf '%s' "$_pf" | jq -r --arg p "$pair_up" \
 		'.[] | select(.pair == $p) | .percentChange24h // empty' 2>/dev/null)
 	printf '%s\t%s' "$_pct" "$_vol" >"$state_file"

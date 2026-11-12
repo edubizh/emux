@@ -32,13 +32,14 @@ up=$(EMUX_ONCE=1 EMUX_NO_COLOR=1 EMUX_NO_CLEAR=1 EMUX_PRICE=74035.8 \
 	EMUX_STATE="0.0081 154.45948915" "$T" btcusd)
 check "price comma-formatted"   '$74,035.80' "$up"
 check "pct positive formatted"  '+0.81%'      "$up"
-check "volume abbreviated+base" '154.46 BTC'  "$up"
+check "pct labelled 24h"        '24h'         "$up"
+check "volume shown in USD"     '$154.46'     "$up"
 
 # --- render: negative 24h change + millions volume ---
 down=$(EMUX_ONCE=1 EMUX_NO_COLOR=1 EMUX_NO_CLEAR=1 EMUX_PRICE=74035.8 \
 	EMUX_STATE="-0.0123 2000000" "$T" btcusd)
-check "pct negative formatted" '-1.23%' "$down"
-check "volume abbreviated (M)" '2.00M'  "$down"
+check "pct negative formatted" '-1.23%'  "$down"
+check "volume USD abbreviated" '$2.00M'  "$down"
 
 # --- figlet-absent fallback still shows the ticker ---
 plain=$(EMUX_ONCE=1 EMUX_NO_COLOR=1 EMUX_NO_CLEAR=1 EMUX_NO_FIGLET=1 EMUX_PRICE=100 \
