@@ -221,6 +221,7 @@ killtree() {
 cleaned=0
 alt=0
 cleanup() {
+	trap '' INT TERM HUP # a mashed Ctrl-C must not preempt teardown mid-way
 	[ "$cleaned" = 1 ] && return
 	cleaned=1
 	[ "$alt" = 1 ] && printf '%s' "$CUR_SHOW$ALT_OFF" # restore the normal screen
