@@ -7,10 +7,11 @@ All notable changes to emux are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
-- `⌥ q` — **move the current pane one slot clockwise** (swap it with the next
-  pane and follow it): the "move" twin of `⌥ Tab`, using the same clockwise
-  order. Repeated presses walk the pane around the grid — handy for arranging
-  `emux-ticker` panes. Powered by `bin/emux-pane-cycle`'s `move` mode.
+- `⌥ q` / `⌥ Shift q` — **move the current pane one slot clockwise /
+  counter-clockwise** (swap it with the neighbouring pane and follow it): the
+  "move" twin of `⌥ Tab`, using the same clockwise order. Repeated presses walk
+  the pane around the grid — handy for arranging `emux-ticker` panes. Powered by
+  `bin/emux-pane-cycle`'s `move` mode.
 
 ## [1.1.0] - 2026-11-12
 

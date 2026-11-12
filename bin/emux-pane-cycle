@@ -19,9 +19,10 @@
 # walk the pane around the grid — the "move" twin of the cycle.
 #
 # Bound by emux.tmux (the TPM entry point), which passes this script's own path:
-#   tmux bind-key -n M-Tab run-shell "$CURRENT_DIR/bin/emux-pane-cycle"       # cycle focus
-#   tmux bind-key -n M-q   run-shell "$CURRENT_DIR/bin/emux-pane-cycle move"  # MOVE the pane
-#   tmux bind-key -n M-S-Tab run-shell "$CURRENT_DIR/bin/emux-pane-cycle -r"  # prev (optional)
+#   tmux bind-key -n M-Tab run-shell "$CURRENT_DIR/bin/emux-pane-cycle"         # cycle focus
+#   tmux bind-key -n M-q   run-shell "$CURRENT_DIR/bin/emux-pane-cycle move"    # MOVE the pane
+#   tmux bind-key -n M-Q   run-shell "$CURRENT_DIR/bin/emux-pane-cycle move -r" # move the other way
+#   tmux bind-key -n M-S-Tab run-shell "$CURRENT_DIR/bin/emux-pane-cycle -r"    # prev (optional)
 #
 # Testing hooks (used by the repo's checks; harmless in normal use):
 #   EMUX_CUR=<id>     override the current pane id
