@@ -1,0 +1,161 @@
+#!/bin/sh
+# emux-ticker — a live one-asset crypto dashboard for a single tmux pane.
+#
+# Run it inside a pane:  emux-ticker btcusd
+# It shows a big figlet banner of the asset (green when up on the day, red when
+# down), the price, the 24h % change, and 24h volume. Split panes and run it
+# again with a different pair to watch several assets at once — that is the whole
+# point of hosting it in tmux.
+#
+# Data comes from the Gemini exchange, free and with no API key:
+#   price / volume : https://api.gemini.com/v1/pubticker/<pair>
+#   24h % change   : https://api.gemini.com/v1/pricefeed
+# (This first version polls every <poll_seconds>; a later version streams the
+# price over Gemini's websocket. See docs/superpowers/specs/*-emux-ticker-*.)
+#
+# Usage:
+#   emux-ticker <PAIR> [poll_seconds]      e.g. emux-ticker ethusd 15
+#
+# Test hooks (harmless in normal use; used by tests/emux-ticker.sh):
+#   EMUX_PRINT_BASE=1   print the derived base asset (e.g. BTC) and exit
+#   EMUX_ONCE=1         render one frame from EMUX_PRICE/EMUX_STATE and exit
+#   EMUX_PRICE=<n>      price to render in once-mode
+#   EMUX_STATE="<pct> <vol>"  inject 24h % (decimal) and volume, skipping curl
+#   EMUX_NO_COLOR=1     disable ANSI color
+#   EMUX_NO_CLEAR=1     do not clear the screen before a frame
+#   EMUX_NO_FIGLET=1    force the plain-text banner fallback
+set -u
+
+UA='Mozilla/5.0'
+API='https://api.gemini.com/v1'
+
+pair_raw=${1:-}
+if [ -z "$pair_raw" ]; then
+	echo "usage: emux-ticker <PAIR> [poll_seconds]   e.g. emux-ticker btcusd" >&2
+	exit 2
+fi
+poll=${2:-20}
+
+pair=$(printf '%s' "$pair_raw" | tr '[:upper:]' '[:lower:]')
+pair_up=$(printf '%s' "$pair" | tr '[:lower:]' '[:upper:]')
+
+# Base asset for the banner: strip a known quote suffix (btcusd -> BTC).
+base=$pair
+for q in usdc usdt gusd usd dai eur gbp sgd btc eth; do
+	case "$pair" in
+	*"$q")
+		stripped=${pair%"$q"}
+		[ -n "$stripped" ] && base=$stripped && break
+		;;
+	esac
+done
+BASE=$(printf '%s' "$base" | tr '[:lower:]' '[:upper:]')
+
+if [ "${EMUX_PRINT_BASE:-}" = 1 ]; then
+	printf '%s\n' "$BASE"
+	exit 0
+fi
+
+# --- colors ---
+if [ "${EMUX_NO_COLOR:-}" = 1 ] || [ -z "${TERM:-}" ]; then
+	GREEN='' RED='' DIM='' RESET=''
+else
+	GREEN=$(tput setaf 2 2>/dev/null || printf '\033[32m')
+	RED=$(tput setaf 1 2>/dev/null || printf '\033[31m')
+	DIM=$(tput setaf 8 2>/dev/null || printf '\033[2m')
+	RESET=$(tput sgr0 2>/dev/null || printf '\033[0m')
+fi
+
+# --- banner (rendered once, reused every frame) ---
+if [ "${EMUX_NO_FIGLET:-}" != 1 ] && command -v figlet >/dev/null 2>&1; then
+	BANNER=$(figlet "$BASE" 2>/dev/null)
+else
+	BANNER="  $BASE"
+fi
+
+# --- formatting helpers ---
+commafy() { # group the integer part and keep 2 decimals: 74035.8 -> 74,035.80
+	awk -v n="$1" 'BEGIN {
+		s = sprintf("%.2f", n + 0); dot = index(s, ".")
+		ip = substr(s, 1, dot - 1); fr = substr(s, dot)
+		neg = ""; if (substr(ip, 1, 1) == "-") { neg = "-"; ip = substr(ip, 2) }
+		out = ""; c = 0
+		for (i = length(ip); i >= 1; i--) {
+			out = substr(ip, i, 1) out; c++
+			if (c % 3 == 0 && i > 1) out = "," out
+		}
+		printf "%s%s%s", neg, out, fr
+	}'
+}
+
+pctfmt() { # decimal fraction -> signed percent: 0.0081 -> +0.81%
+	[ -n "$1" ] || return 0
+	awk -v p="$1" 'BEGIN { printf "%+.2f%%", p * 100 }'
+}
+
+abbr() { # human volume: 154.46, 2.00M, 1.23B
+	awk -v n="$1" 'BEGIN {
+		a = n + 0
+		if (a >= 1e9) printf "%.2fB", a / 1e9
+		else if (a >= 1e6) printf "%.2fM", a / 1e6
+		else if (a >= 1e3) printf "%.2fK", a / 1e3
+		else printf "%.2f", a
+	}'
+}
+
+# render <price> <pct-decimal> <volume>
+render() {
+	_price=${1:-}
+	_pct=${2:-}
+	_vol=${3:-}
+
+	case "$_pct" in
+	'') col=$DIM arrow='·' pctd='—' ;;
+	-*) col=$RED arrow='▼' pctd=$(pctfmt "$_pct") ;;
+	*) col=$GREEN arrow='▲' pctd=$(pctfmt "$_pct") ;;
+	esac
+
+	if [ -n "$_price" ]; then
+		priced='$'$(commafy "$_price")
+	else
+		priced='—'
+	fi
+	if [ -n "$_vol" ]; then
+		vold="$(abbr "$_vol") $BASE"
+	else
+		vold='—'
+	fi
+
+	[ "${EMUX_NO_CLEAR:-}" = 1 ] || { tput clear 2>/dev/null || printf '\033[2J\033[H'; }
+	printf '%s%s%s\n\n' "$col" "$BANNER" "$RESET"
+	printf '  %s%s   %s %s%s\n' "$col" "$priced" "$arrow" "$pctd" "$RESET"
+	printf '  %sVol  %s%s\n' "$DIM" "$vold" "$RESET"
+}
+
+if [ "${EMUX_ONCE:-}" = 1 ]; then
+	s=${EMUX_STATE:-}
+	render "${EMUX_PRICE:-}" "${s%% *}" "${s#* }"
+	exit 0
+fi
+
+# --- live loop: poll Gemini REST and redraw ---
+fetch() { # echo "price<TAB>pct<TAB>vol" from one round of polling
+	pt=$(curl -s --max-time 10 -H "User-Agent: $UA" "$API/pubticker/$pair")
+	pf=$(curl -s --max-time 10 -H "User-Agent: $UA" "$API/pricefeed")
+	price=$(printf '%s' "$pt" | jq -r '.last // empty' 2>/dev/null)
+	vol=$(printf '%s' "$pt" | jq -r --arg b "$BASE" '.volume[$b] // empty' 2>/dev/null)
+	pct=$(printf '%s' "$pf" | jq -r --arg p "$pair_up" \
+		'.[] | select(.pair == $p) | .percentChange24h // empty' 2>/dev/null)
+	printf '%s\t%s\t%s' "$price" "$pct" "$vol"
+}
+
+tab=$(printf '\t')
+while :; do
+	row=$(fetch)
+	price=${row%%"$tab"*}
+	rest=${row#*"$tab"}
+	pct=${rest%%"$tab"*}
+	vol=${rest##*"$tab"}
+	render "$price" "$pct" "$vol"
+	sleep "$poll"
+done
