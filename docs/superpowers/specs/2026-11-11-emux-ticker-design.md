@@ -1,131 +1,167 @@
 # emux-ticker — design (v1 prototype)
 
 - **Date:** 2026-11-11
-- **Status:** approved for planning
+- **Status:** approved for implementation
 - **Branch:** `feat/emux-ticker`
 
 ## Goal
 
 The first prototype of emux's "finance template" direction: a single script,
-`emux-ticker <SYMBOL>`, that turns one tmux pane into a live dashboard for one
-asset. Because each pane runs its own instance, splitting panes gives a
-multi-asset view for free — that is the whole point of hosting this in tmux.
+`emux-ticker <PAIR>`, that turns one tmux pane into a **live, streaming**
+dashboard for one crypto asset. Because each pane runs its own instance,
+splitting panes gives a multi-asset view for free — that is the whole point of
+hosting this in tmux.
 
 This spec covers **only** that one script. Everything else (launcher, popup
-search, charts, crypto) is explicitly deferred (see Non-goals).
+search, charts, stocks, prediction markets) is explicitly deferred (see
+Non-goals).
+
+## Why crypto first (not stocks)
+
+Hard constraints: **no money, no API keys.** Under those, *free + no-key +
+real-time streaming* exists only for **crypto**: crypto exchanges give market
+data away free, while stock exchanges (NYSE/Nasdaq) license their real-time
+feeds. There is no free, no-key stock websocket — free stock data is HTTP
+polling only (e.g. Yahoo). So the roadmap is **crypto-first, streaming-first**.
+Vendor: the **Gemini** exchange (chosen over Coinbase), whose public market-data
+websocket and REST endpoints need no auth.
 
 ## Scope (v1)
 
-`emux-ticker <SYMBOL> [interval]`
+`emux-ticker <PAIR> [poll_seconds]` — e.g. `emux-ticker btcusd`.
 
-Runs in the foreground inside a pane and loops forever:
+Runs in the foreground inside a pane and shows one asset, with two data cadences:
 
-1. `curl` the free Yahoo Finance endpoint for `<SYMBOL>`.
-2. `jq` out: symbol, current price, previous close, latest volume.
-3. Compute the day's change: `price - prevClose`, and `%` of prevClose.
-4. Redraw the pane:
-   - a **big ASCII-art banner** of the ticker (`figlet`, **default "standard"
-     font at its natural size** — no condensed fonts, no width squeezing),
-     **left-aligned at the top of the pane as its header**, tinted **green**
-     when the day's change ≥ 0, **red** when < 0;
-   - the **price**, the **± change and %** (same color), and **volume**;
-   - a small refresh indicator (the interval).
-5. Sleep `interval` seconds (default 15) and repeat.
+- **Price — streamed live** over a persistent Gemini websocket (pushes, no
+  polling).
+- **24h % change and 24h volume — polled** on a short interval (default 20s)
+  from Gemini REST, because a raw trade stream carries price only and those
+  values move slowly.
 
 ### Output layout (illustrative)
 
 The banner is `figlet` with its default font, full size, left-aligned as a
-header; the stats sit underneath it. This is the exact sizing to match — not a
-condensed/squished variant:
+header; the stats sit underneath it:
 
 ```
-    _        _    ____  _          <- figlet "$SYMBOL" (default font, green/red)
-   / \      / \  |  _ \| |
-  / _ \    / _ \ | |_) | |
- / ___ \  / ___ \|  __/| |___
-/_/   \_\/_/   \_\_|   |_____|
+  ____    _____    ____          <- figlet of the BASE asset (e.g. "BTC"),
+ | __ )  |_   _|  / ___|            tinted green when 24h change >= 0, else red
+ |  _ \    | |   | |
+ | |_) |   | |   | |___
+ |____/    |_|    \____|
 
-  $355.63   ▲ +6.12 (+1.75%)
-  Vol  34.0M                       ⟳ 15s
+  $74,035.80   ▲ +0.81%          <- price = live (streamed); % = polled
+  Vol  154.46 BTC                <- 24h volume (polled)        ⟳ live
 ```
 
-## Data source
+## Data sources (all Gemini, no key, verified 2026-11-11)
 
-Yahoo Finance public chart endpoint — **no API key, no account, no payment**:
+1. **Live price — websocket:** `wss://api.gemini.com/v1/marketdata/<pair>`
+   (pair lowercased, e.g. `btcusd`). The feed streams messages whose `events[]`
+   include `{"type":"trade","price":"…"}`; we take the `price` of each `trade`.
+2. **24h % change — REST:** `https://api.gemini.com/v1/pricefeed` returns an
+   array of `{pair, price, percentChange24h}`; we select our pair (uppercased,
+   e.g. `BTCUSD`) and read `percentChange24h` (a decimal fraction — `0.0081`
+   means +0.81%).
+3. **24h volume — REST:** `https://api.gemini.com/v1/pubticker/<pair>` returns
+   `.volume`, an object keyed by the uppercased base asset (e.g. `.volume.BTC`)
+   plus the quote and a timestamp.
+
+All requests send a browser `User-Agent` and `--max-time 10`.
+
+## Architecture (the persistent pipeline)
+
+One long-lived shell process per pane; **no per-tick process spawns** for the
+price path:
 
 ```
-https://query1.finance.yahoo.com/v8/finance/chart/<SYMBOL>?range=1d&interval=1d
+  websocat <wss>  |  jq --unbuffered -r '<trade price>'  |  while read price; do render; done
+        \                                                          ^
+         persistent                                                | reads
+                                                                   state file
+  poller (background): every N s  curl pricefeed + pubticker  -->  writes "pct vol"
 ```
 
-Fields used (verified returning live data on 2026-11-11):
+- `websocat` and `jq` stay open for the life of the pane; `figlet` runs **once**
+  and its banner is cached. The only short-lived processes are the poller's
+  `curl`s, every ~20s.
+- The **poller** is a background loop writing the latest `pct` and `vol` to a
+  small temp state file; `render` reads that file each redraw, so the two
+  cadences stay decoupled.
+- `render` clears the pane (`tput clear`) and prints the cached banner (colored
+  by the sign of the last polled `pct`) + formatted price, % and volume.
 
-- `.chart.result[0].meta.symbol`
-- `.chart.result[0].meta.regularMarketPrice` — current price
-- `.chart.result[0].meta.chartPreviousClose` — previous close (for change/%)
-- `.chart.result[0].meta.currency`
-- latest non-null of `.chart.result[0].indicators.quote[0].volume`
+### Process model (for reference)
 
-Caveats (acceptable for a personal prototype): the endpoint is unofficial and
-may rate-limit or change; free data can be delayed; outside market hours the
-price is the last close. The script must degrade gracefully, not crash.
+```
+tmux server
+└─ sh emux-ticker btcusd          (hosted by tmux; the persistent "app")
+   ├─ websocat                    (persistent: holds the live stream)
+   ├─ jq --unbuffered             (persistent: parses each message)
+   └─ poller (background subshell)(persistent: every ~20s …)
+        └─ curl                   (short-lived grandchild, ~every 20s)
+```
 
-## Interface & behavior
+## Behavior & robustness
 
-- **Args:** `SYMBOL` (required, case-insensitive — upcased before use).
-  `interval` (optional, default `15`, seconds).
-- **Request:** `curl -s --max-time 10` with a browser `User-Agent` header
-  (Yahoo rejects some default agents).
-- **Redraw:** clear the screen each frame (e.g. `tput clear`) so the pane shows
-  one current snapshot, not a scrolling log.
-- **Exit:** `Ctrl-C` stops it; it is just a normal foreground program in a pane.
-
-## Error handling
-
-- **Bad / unknown symbol:** endpoint returns an error object or null price →
-  render the banner plus a clear `symbol not found` line; keep looping (the user
-  may have mistyped and can `Ctrl-C`).
-- **Network failure / timeout:** keep the last good frame on screen and show an
-  `offline — retrying` marker; never exit the loop on a transient failure.
-- **Missing volume (null):** show `Vol —`.
+- **Args:** `PAIR` required (case-insensitive; lowercased for URLs, base asset
+  uppercased for the banner). `poll_seconds` optional, default `20`.
+- **Base asset for the banner:** strip a known quote suffix
+  (`usdc usdt gusd usd dai eur gbp sgd btc eth`) from the pair; fall back to the
+  whole symbol if none matches. `btcusd → BTC`, `ethusdc → ETH`.
+- **Reconnect:** if the websocket drops, `websocat` exits → an outer `while`
+  loop shows `reconnecting…` and retries after a short sleep. The poller keeps
+  running across reconnects.
+- **Startup:** before the first trade streams in, seed the price from the first
+  poll so the pane isn't blank.
+- **Cleanup:** a `trap` on EXIT/INT/TERM kills the poller and removes the temp
+  state file.
+- **Missing `figlet`:** fall back to printing the plain uppercased base asset so
+  the script still runs; print the install hint once.
 
 ## Dependencies
 
 - `curl` — preinstalled on macOS.
-- `jq` — already installed on this machine.
-- `figlet` — **one-time `brew install figlet`** (not yet installed). `toilet` is
-  a nicer optional upgrade (color filters) but `figlet` is the baseline.
-
-If `figlet` is missing, fall back to printing the plain upcased symbol so the
-script still runs; note the install hint once.
+- `jq` — already installed (1.8.1).
+- `websocat` — **`brew install websocat`** (a single no-key binary; the
+  websocket client).
+- `figlet` — **`brew install figlet`** (optional; graceful fallback if absent).
 
 ## Testing
 
-Follow emux's existing convention (scripts are testable without a live tmux and
-are shellcheck-clean):
+emux convention: scripts are POSIX `sh`, shellcheck-clean, and testable without
+a live tmux via env-var hooks. For `emux-ticker`:
 
-- `bin/emux-ticker` is **POSIX `sh`**, shellcheck-clean.
 - **Test hooks** (harmless in normal use):
-  - `EMUX_FIXTURE=<path>` — read the API JSON from a file instead of `curl`, so
-    parsing/formatting can be tested offline with canned responses (valid quote,
-    unknown symbol, null volume).
-  - `EMUX_ONCE=1` — render exactly one frame and exit (no loop / no sleep), so a
-    test can assert the rendered output.
-- Checks to cover: price/change/% computed correctly from a fixture; green vs
-  red chosen by sign; `symbol not found` path; null-volume path.
+  - `EMUX_ONCE=1` — render exactly one frame and exit (no stream, no loop).
+  - `EMUX_PRICE=<n>` — the price to render in once-mode.
+  - `EMUX_STATE="<pct> <vol>"` — inject polled values (skips the poller/curl) so
+    a render is deterministic.
+  - `EMUX_WS_FIXTURE=<file>` — read websocket lines from a file instead of
+    connecting, to test price extraction + continuous render offline.
+  - `EMUX_NO_COLOR=1` — disable ANSI color for stable test output.
+- A `tests/emux-ticker.sh` runner asserts: base-asset derivation; `trade` price
+  extraction from a sample Gemini message; green vs red by the sign of `pct`;
+  price/%/volume formatting; `figlet`-absent fallback.
+- `bin/emux-ticker` passes `shellcheck` (the CI gate runs `shellcheck bin/*`).
 
 ## Where it lives / repo rules
 
-- New file: `bin/emux-ticker` (sibling of the existing `bin/` helpers).
+- New file: `bin/emux-ticker` (sibling of the existing `bin/` helpers), plus
+  `tests/emux-ticker.sh`.
 - This adds a **new** capability and changes **no** existing keybinding, so it is
-  not a breaking change and needs **no version bump** (per AGENTS.md).
+  not breaking and needs **no version bump**; it lands under `[Unreleased]` in
+  the changelog as a `feat`.
 - Ship via branch → PR → squash-merge (`feat/emux-ticker`); PR title is a
-  Conventional Commit (`feat: ...`).
+  Conventional Commit (`feat: …`).
 
 ## Non-goals (deferred to later phases)
 
 1. `emux-finance` launcher that opens a preset grid of tickers.
-2. A `display-popup` "center search bar" to spawn a new ticker pane by typing a
+2. A `display-popup` "center search bar" to spawn a ticker pane by typing a
    symbol, bound to an `⌥` key.
 3. Charts (sparkline, then full ASCII graph).
-4. Crypto and other asset classes (the same script generalizes; the banner being
-   the plain symbol keeps it uniform across asset types).
+4. **Stocks** (would need Yahoo polling or a free-keyed stream) and
+   **prediction markets** (a wanted later direction — the reason streaming infra
+   is worth building now). The same script generalizes; only the data adapter
+   changes.
