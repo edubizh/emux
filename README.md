@@ -140,6 +140,48 @@ visits every pane exactly once per lap and can never get stuck** — on any
 layout. It also stays immune to pane renumbering and to the `⌥ =` snap. It's
 handled by the helper [`bin/emux-pane-cycle`](bin/emux-pane-cycle).
 
+## Live crypto ticker — `emux-ticker`
+
+The start of emux's "finance template": a standalone helper that turns one pane
+into a live price dashboard for a crypto asset. Split panes and run it again to
+watch several at once — tmux becomes a trading desk you drive one-handed.
+
+```sh
+emux-ticker btcusd        # Bitcoin
+emux-ticker ethusd 10     # Ethereum, refresh 24h stats every 10s
+```
+
+Each pane shows a big figlet banner of the ticker (green when up on the day, red
+when down), the price, the 24h % change, and 24h volume:
+
+```
+ ____ _____ ____
+| __ )_   _/ ___|
+|  _ \ | || |
+| |_) || || |___
+|____/ |_| \____|
+
+  $73,641.30   ▲ +0.64%
+  Vol  154.44 BTC
+  median · 3/3 live
+```
+
+**Why the price is trustworthy.** It streams from **three exchange websockets at
+once** — Gemini, Coinbase and Kraken — and shows the **median of whichever are
+live**. If one vendor stalls or drops it falls out of the median and the health
+line updates (`2/3 live`); when it recovers, `3/3`. The 24h % change and volume
+come from Gemini's REST API. Everything is free and needs **no API keys**.
+
+Choose specific sources with `EMUX_VENDORS` (default: all three):
+
+```sh
+EMUX_VENDORS=gemini,kraken emux-ticker btcusd
+```
+
+**Requirements:** `websocat`, `jq`, `figlet` (`brew install websocat jq figlet`).
+Crypto only for now — stocks need licensed real-time data; prediction markets are
+a planned direction.
+
 ## Versioning
 
 emux follows [Semantic Versioning](https://semver.org). The keybindings are the
