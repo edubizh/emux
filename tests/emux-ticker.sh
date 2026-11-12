@@ -45,5 +45,20 @@ plain=$(EMUX_ONCE=1 EMUX_NO_COLOR=1 EMUX_NO_CLEAR=1 EMUX_NO_FIGLET=1 EMUX_PRICE=
 	EMUX_STATE="0 1" "$T" btcusd)
 check "figlet fallback shows base" 'BTC' "$plain"
 
+# --- median of price sources ---
+check "median of 3 (odd)"      "2"        "$(EMUX_PRINT_MEDIAN='3 1 2' "$T" btc)"
+check "median of 2 (even avg)" "15"       "$(EMUX_PRINT_MEDIAN='10 20' "$T" btc)"
+check "median ignores outlier" "73619.63" "$(EMUX_PRINT_MEDIAN='73625.47 73619.63 73614.0' "$T" btc)"
+
+# --- aggregation: replay vendor prices, assert the median is rendered ---
+aggf=$(mktemp "${TMPDIR:-/tmp}/emux-agg.XXXXXX")
+printf 'gemini\t73625.47\ncoinbase\t73619.63\nkraken\t73614.0\n' >"$aggf"
+agg=$(EMUX_NO_COLOR=1 EMUX_NO_CLEAR=1 EMUX_STATE="0.0081 154.46" \
+	EMUX_AGG_FIXTURE="$aggf" "$T" btcusd)
+rm -f "$aggf"
+check "median of 3 vendors rendered" '$73,619.63' "$agg"
+check "aggregation keeps polled pct" '+0.81%'      "$agg"
+check "health line shows live count" '3/3 live'    "$agg"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

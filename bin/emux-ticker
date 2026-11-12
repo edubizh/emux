@@ -1,33 +1,44 @@
-#!/bin/sh
-# emux-ticker — a live one-asset crypto dashboard for a single tmux pane.
+#!/usr/bin/env bash
+# emux-ticker — a live, multi-vendor crypto dashboard for a single tmux pane.
+#
+# (bash, not POSIX sh — it uses a timed `read` so the signal traps that tear
+# down the background feeds fire promptly, and manages several child processes.)
 #
 # Run it inside a pane:  emux-ticker btcusd
 # It shows a big figlet banner of the asset (green when up on the day, red when
-# down), the price, the 24h % change, and 24h volume. Split panes and run it
-# again with a different pair to watch several assets at once — that is the whole
-# point of hosting it in tmux.
+# down), a live price, the 24h % change, 24h volume, and a source-health line.
+# Split panes and run it again with a different pair to watch several assets at
+# once — that is the whole point of hosting it in tmux.
 #
-# Data comes from the Gemini exchange, free and with no API key:
-#   price / volume : https://api.gemini.com/v1/pubticker/<pair>
-#   24h % change   : https://api.gemini.com/v1/pricefeed
-# (This first version polls every <poll_seconds>; a later version streams the
-# price over Gemini's websocket. See docs/superpowers/specs/*-emux-ticker-*.)
+# Distributed-systems bit: the price is streamed from SEVERAL exchange
+# websockets at once (Gemini, Coinbase, Kraken) and shown as the MEDIAN of the
+# sources that are currently live. If one vendor drops, it is dropped from the
+# median and the health line shows e.g. "2/3 live"; when it returns, "3/3". All
+# feeds are free and need no API key. 24h %/volume come from Gemini REST.
 #
 # Usage:
-#   emux-ticker <PAIR> [poll_seconds]      e.g. emux-ticker ethusd 15
+#   emux-ticker <PAIR> [poll_seconds]        e.g. emux-ticker ethusd 15
+# Pick vendors with EMUX_VENDORS (default all): e.g. EMUX_VENDORS=gemini,kraken
 #
 # Test hooks (harmless in normal use; used by tests/emux-ticker.sh):
-#   EMUX_PRINT_BASE=1   print the derived base asset (e.g. BTC) and exit
-#   EMUX_ONCE=1         render one frame from EMUX_PRICE/EMUX_STATE and exit
-#   EMUX_PRICE=<n>      price to render in once-mode
+#   EMUX_PRINT_BASE=1     print the derived base asset (e.g. BTC) and exit
+#   EMUX_PRINT_MEDIAN="a b c"  print the median of those numbers and exit
+#   EMUX_ONCE=1           render one frame from EMUX_PRICE/EMUX_STATE and exit
+#   EMUX_PRICE=<n>        price to render in once-mode
 #   EMUX_STATE="<pct> <vol>"  inject 24h % (decimal) and volume, skipping curl
-#   EMUX_NO_COLOR=1     disable ANSI color
-#   EMUX_NO_CLEAR=1     do not clear the screen before a frame
-#   EMUX_NO_FIGLET=1    force the plain-text banner fallback
+#   EMUX_AGG_FIXTURE=<f>  replay "vendor<TAB>price" lines (no network) and exit
+#   EMUX_VENDORS=a,b      restrict/choose price sources
+#   EMUX_LIVE_WINDOW=<s>  seconds a vendor stays "live" after its last price
+#   EMUX_NO_COLOR=1       disable ANSI color
+#   EMUX_NO_CLEAR=1       do not emit cursor/clear control codes
+#   EMUX_NO_FIGLET=1      force the plain-text banner fallback
 set -u
 
 UA='Mozilla/5.0'
 API='https://api.gemini.com/v1'
+
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+upper() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]'; }
 
 pair_raw=${1:-}
 if [ -z "$pair_raw" ]; then
@@ -36,27 +47,51 @@ if [ -z "$pair_raw" ]; then
 fi
 poll=${2:-20}
 
-pair=$(printf '%s' "$pair_raw" | tr '[:upper:]' '[:lower:]')
-pair_up=$(printf '%s' "$pair" | tr '[:lower:]' '[:upper:]')
-
-# Base asset for the banner: strip a known quote suffix (btcusd -> BTC).
-base=$pair
+# Split the pair into base + quote (btcusd -> BTC + USD; defaults to USD).
+in=$(lower "$pair_raw")
+base=$in
+quote=usd
 for q in usdc usdt gusd usd dai eur gbp sgd btc eth; do
-	case "$pair" in
+	case "$in" in
 	*"$q")
-		stripped=${pair%"$q"}
-		[ -n "$stripped" ] && base=$stripped && break
+		stripped=${in%"$q"}
+		if [ -n "$stripped" ]; then
+			base=$stripped
+			quote=$q
+			break
+		fi
 		;;
 	esac
 done
-BASE=$(printf '%s' "$base" | tr '[:lower:]' '[:upper:]')
+BASE=$(upper "$base")
+QUOTE=$(upper "$quote")
+pair=$(lower "$BASE$QUOTE") # gemini REST/ws symbol, e.g. btcusd
+pair_up="$BASE$QUOTE"       # gemini pricefeed pair, e.g. BTCUSD
 
 if [ "${EMUX_PRINT_BASE:-}" = 1 ]; then
 	printf '%s\n' "$BASE"
 	exit 0
 fi
 
-# --- colors ---
+# median of the numbers passed as arguments
+median() {
+	[ "$#" -gt 0 ] || return 0
+	printf '%s\n' "$@" | sort -n | awk '
+		{ a[NR] = $1 }
+		END {
+			if (NR == 0) exit
+			if (NR % 2) print a[(NR + 1) / 2]
+			else print (a[NR / 2] + a[NR / 2 + 1]) / 2
+		}'
+}
+
+if [ -n "${EMUX_PRINT_MEDIAN:-}" ]; then
+	# shellcheck disable=SC2086
+	median $EMUX_PRINT_MEDIAN
+	exit 0
+fi
+
+# --- colors + cursor control ---
 if [ "${EMUX_NO_COLOR:-}" = 1 ] || [ -z "${TERM:-}" ]; then
 	GREEN='' RED='' DIM='' RESET=''
 else
@@ -64,6 +99,13 @@ else
 	RED=$(tput setaf 1 2>/dev/null || printf '\033[31m')
 	DIM=$(tput setaf 8 2>/dev/null || printf '\033[2m')
 	RESET=$(tput sgr0 2>/dev/null || printf '\033[0m')
+fi
+if [ "${EMUX_NO_CLEAR:-}" = 1 ]; then
+	C_HOME='' C_EOL='' C_EOS=''
+else
+	C_HOME=$(printf '\033[H')  # cursor to top-left (redraw in place, no flicker)
+	C_EOL=$(printf '\033[K')   # clear to end of line
+	C_EOS=$(printf '\033[J')   # clear to end of screen
 fi
 
 # --- banner (rendered once, reused every frame) ---
@@ -74,7 +116,7 @@ else
 fi
 
 # --- formatting helpers ---
-commafy() { # group the integer part and keep 2 decimals: 74035.8 -> 74,035.80
+commafy() { # 74035.8 -> 74,035.80
 	awk -v n="$1" 'BEGIN {
 		s = sprintf("%.2f", n + 0); dot = index(s, ".")
 		ip = substr(s, 1, dot - 1); fr = substr(s, dot)
@@ -87,13 +129,11 @@ commafy() { # group the integer part and keep 2 decimals: 74035.8 -> 74,035.80
 		printf "%s%s%s", neg, out, fr
 	}'
 }
-
-pctfmt() { # decimal fraction -> signed percent: 0.0081 -> +0.81%
+pctfmt() { # 0.0081 -> +0.81%
 	[ -n "$1" ] || return 0
 	awk -v p="$1" 'BEGIN { printf "%+.2f%%", p * 100 }'
 }
-
-abbr() { # human volume: 154.46, 2.00M, 1.23B
+abbr() { # 154.46 / 2.00M / 1.23B
 	awk -v n="$1" 'BEGIN {
 		a = n + 0
 		if (a >= 1e9) printf "%.2fB", a / 1e9
@@ -103,33 +143,26 @@ abbr() { # human volume: 154.46, 2.00M, 1.23B
 	}'
 }
 
-# render <price> <pct-decimal> <volume>
+# render <price> <pct-decimal> <volume> [health]
 render() {
 	_price=${1:-}
 	_pct=${2:-}
 	_vol=${3:-}
+	_health=${4:-}
 
 	case "$_pct" in
 	'') col=$DIM arrow='·' pctd='—' ;;
 	-*) col=$RED arrow='▼' pctd=$(pctfmt "$_pct") ;;
 	*) col=$GREEN arrow='▲' pctd=$(pctfmt "$_pct") ;;
 	esac
+	if [ -n "$_price" ]; then priced='$'$(commafy "$_price"); else priced='—'; fi
+	if [ -n "$_vol" ]; then vold="$(abbr "$_vol") $BASE"; else vold='—'; fi
 
-	if [ -n "$_price" ]; then
-		priced='$'$(commafy "$_price")
-	else
-		priced='—'
-	fi
-	if [ -n "$_vol" ]; then
-		vold="$(abbr "$_vol") $BASE"
-	else
-		vold='—'
-	fi
-
-	[ "${EMUX_NO_CLEAR:-}" = 1 ] || { tput clear 2>/dev/null || printf '\033[2J\033[H'; }
-	printf '%s%s%s\n\n' "$col" "$BANNER" "$RESET"
-	printf '  %s%s   %s %s%s\n' "$col" "$priced" "$arrow" "$pctd" "$RESET"
-	printf '  %sVol  %s%s\n' "$DIM" "$vold" "$RESET"
+	printf '%s%s%s%s\n\n' "$C_HOME" "$col" "$BANNER" "$RESET"
+	printf '  %s%s   %s %s%s%s\n' "$col" "$priced" "$arrow" "$pctd" "$RESET" "$C_EOL"
+	printf '  %sVol  %s%s%s\n' "$DIM" "$vold" "$RESET" "$C_EOL"
+	[ -n "$_health" ] && printf '  %s%s%s%s\n' "$DIM" "$_health" "$RESET" "$C_EOL"
+	printf '%s' "$C_EOS"
 }
 
 if [ "${EMUX_ONCE:-}" = 1 ]; then
@@ -138,24 +171,182 @@ if [ "${EMUX_ONCE:-}" = 1 ]; then
 	exit 0
 fi
 
-# --- live loop: poll Gemini REST and redraw ---
-fetch() { # echo "price<TAB>pct<TAB>vol" from one round of polling
-	pt=$(curl -s --max-time 10 -H "User-Agent: $UA" "$API/pubticker/$pair")
-	pf=$(curl -s --max-time 10 -H "User-Agent: $UA" "$API/pricefeed")
-	price=$(printf '%s' "$pt" | jq -r '.last // empty' 2>/dev/null)
-	vol=$(printf '%s' "$pt" | jq -r --arg b "$BASE" '.volume[$b] // empty' 2>/dev/null)
-	pct=$(printf '%s' "$pf" | jq -r --arg p "$pair_up" \
-		'.[] | select(.pair == $p) | .percentChange24h // empty' 2>/dev/null)
-	printf '%s\t%s\t%s' "$price" "$pct" "$vol"
+# --- per-vendor websocket config ---
+v_url() {
+	case "$1" in
+	gemini) printf 'wss://api.gemini.com/v1/marketdata/%s?top_of_book=true&bids=true&offers=false&trades=false&heartbeat=true' "$pair" ;;
+	coinbase) printf 'wss://ws-feed.exchange.coinbase.com' ;;
+	kraken) printf 'wss://ws.kraken.com/v2' ;;
+	esac
+}
+v_sub() { # subscribe message to send on connect (empty = none)
+	case "$1" in
+	coinbase) printf '{"type":"subscribe","product_ids":["%s-%s"],"channels":["ticker"]}' "$BASE" "$QUOTE" ;;
+	kraken) printf '{"method":"subscribe","params":{"channel":"ticker","symbol":["%s/%s"]}}' "$BASE" "$QUOTE" ;;
+	esac
+}
+v_filter() { # jq filter: raw ws lines -> price
+	case "$1" in
+	gemini) printf 'fromjson? | .events[]? | select(.side=="bid") | .price' ;;
+	coinbase) printf 'fromjson? | select(.type=="ticker") | .price' ;;
+	kraken) printf 'fromjson? | select(.channel=="ticker") | .data[]? | .last' ;;
+	esac
 }
 
+# refresh 24h %/volume (from Gemini REST) into the state file
+poll_state() {
+	_pt=$(curl -s --max-time 10 -H "User-Agent: $UA" "$API/pubticker/$pair")
+	_pf=$(curl -s --max-time 10 -H "User-Agent: $UA" "$API/pricefeed")
+	_vol=$(printf '%s' "$_pt" | jq -r --arg b "$BASE" '.volume[$b] // empty' 2>/dev/null)
+	_pct=$(printf '%s' "$_pf" | jq -r --arg p "$pair_up" \
+		'.[] | select(.pair == $p) | .percentChange24h // empty' 2>/dev/null)
+	printf '%s\t%s' "$_pct" "$_vol" >"$state_file"
+}
+
+# tmp workspace + cleanup
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/emux-ticker.XXXXXX") || exit 1
+state_file="$tmpdir/state"
+: >"$state_file"
 tab=$(printf '\t')
+producer_pids=''
+
+killtree() {
+	for _c in $(pgrep -P "$1" 2>/dev/null); do killtree "$_c"; done
+	kill -KILL "$1" 2>/dev/null
+}
+cleaned=0
+cleanup() {
+	[ "$cleaned" = 1 ] && return
+	cleaned=1
+	unset IFS       # the signal can land mid-parse (IFS=,) — restore splitting
+	exec 2>/dev/null # hush bash's "Killed" job notices as we reap the feeds
+	# Freeze every feed loop FIRST so none can respawn a websocat mid-teardown,
+	# then kill each feed's whole subtree. (Feeds share our process group, so a
+	# terminal Ctrl-C / pane close already reaps them; this covers a bare kill.)
+	# shellcheck disable=SC2086
+	for _p in $producer_pids; do kill -STOP "$_p" 2>/dev/null; done
+	# shellcheck disable=SC2086
+	for _p in $producer_pids; do killtree "$_p"; done
+	rm -rf "$tmpdir"
+}
+trap cleanup EXIT
+trap 'cleanup; exit 0' INT TERM HUP
+
+VENDORS=${EMUX_VENDORS:-gemini,coinbase,kraken}
+
+# per-vendor last price + timestamp (reducer runs in this shell, so these persist)
+p_gemini='' t_gemini=0
+p_coinbase='' t_coinbase=0
+p_kraken='' t_kraken=0
+
+draw_agg() {
+	now=$(date +%s)
+	prices='' live=0 total=0
+	oifs=$IFS
+	IFS=,
+	for v in $VENDORS; do
+		IFS=$oifs
+		total=$((total + 1))
+		case "$v" in
+		gemini) pp=$p_gemini tt=$t_gemini ;;
+		coinbase) pp=$p_coinbase tt=$t_coinbase ;;
+		kraken) pp=$p_kraken tt=$t_kraken ;;
+		*) pp='' tt=0 ;;
+		esac
+		if [ -n "$pp" ] && [ "$((now - tt))" -le "$live_window" ]; then
+			prices="$prices $pp"
+			live=$((live + 1))
+		fi
+		IFS=,
+	done
+	IFS=$oifs
+	# shellcheck disable=SC2086
+	med=$(median $prices)
+	_s=$(cat "$state_file" 2>/dev/null)
+	render "$med" "${_s%%"$tab"*}" "${_s##*"$tab"}" "median · $live/$total live"
+}
+
+live_window=${EMUX_LIVE_WINDOW:-10}
+
+# Offline hook: replay captured "vendor<TAB>price" lines, no network. (tests)
+if [ -n "${EMUX_AGG_FIXTURE:-}" ]; then
+	[ -n "${EMUX_STATE:-}" ] &&
+		printf '%s\t%s' "${EMUX_STATE%% *}" "${EMUX_STATE#* }" >"$state_file"
+	src="$EMUX_AGG_FIXTURE"
+else
+	src="$tmpdir/out"
+	mkfifo "$src" || exit 1
+
+	# one producer per selected vendor: stream prices, tag with vendor, reconnect
+	oifs=$IFS
+	IFS=,
+	for v in $VENDORS; do
+		IFS=$oifs
+		url=$(v_url "$v")
+		sub=$(v_sub "$v")
+		filt=$(v_filter "$v")
+		[ -n "$url" ] || continue
+		infifo="$tmpdir/in.$v"
+		mkfifo "$infifo" 2>/dev/null
+		(
+			while :; do
+				# writer: send subscribe (if any), then hold stdin open so
+				# websocat (which exits on stdin EOF) stays connected.
+				(
+					[ -n "$sub" ] && printf '%s\n' "$sub"
+					while :; do sleep 60; done
+				) >"$infifo" &
+				w=$!
+				websocat "$url" <"$infifo" 2>/dev/null |
+					jq --unbuffered -rR "$filt" 2>/dev/null |
+					while IFS= read -r pr; do
+						[ -n "$pr" ] && printf '%s\t%s\n' "$v" "$pr"
+					done
+				kill "$w" 2>/dev/null
+				sleep 2
+			done
+		) >"$src" 2>/dev/null &
+		producer_pids="$producer_pids $!"
+		IFS=,
+	done
+	IFS=$oifs
+
+	# a POLL tick every <poll> seconds refreshes 24h %/volume
+	(
+		while :; do
+			sleep "$poll"
+			printf 'POLL\n'
+		done
+	) >"$src" 2>/dev/null &
+	producer_pids="$producer_pids $!"
+
+	poll_state
+	draw_agg
+fi
+
+# single consumer owns the screen: update per-vendor state, redraw the median.
+# A 1s read timeout keeps the loop breathing so a pending signal trap (which
+# tears down the feeds) runs promptly instead of waiting on the next line.
 while :; do
-	row=$(fetch)
-	price=${row%%"$tab"*}
-	rest=${row#*"$tab"}
-	pct=${rest%%"$tab"*}
-	vol=${rest##*"$tab"}
-	render "$price" "$pct" "$vol"
-	sleep "$poll"
-done
+	if IFS= read -r -t 1 line; then
+		case "$line" in
+		POLL) poll_state && draw_agg ;;
+		'') : ;;
+		*)
+			vendor=${line%%"$tab"*}
+			price=${line#*"$tab"}
+			now=$(date +%s)
+			case "$vendor" in
+			gemini) p_gemini=$price t_gemini=$now ;;
+			coinbase) p_coinbase=$price t_coinbase=$now ;;
+			kraken) p_kraken=$price t_kraken=$now ;;
+			esac
+			draw_agg
+			;;
+		esac
+	else
+		rc=$?
+		[ "$rc" -gt 128 ] && continue # read timed out: loop so traps can run
+		break                         # EOF: all writers gone
+	fi
+done <"$src"
