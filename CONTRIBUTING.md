@@ -65,7 +65,12 @@ any `feat` ⇒ minor, else patch. If nothing user-facing changed, don't release.
    git tag -a vX.Y.Z -m "emux vX.Y.Z"
    git push origin vX.Y.Z
    ```
-5. Publish a GitHub Release from the tag using the changelog section as notes.
+5. Publish a GitHub Release whose notes are a **flat, itemized list of the
+   commit subjects** since the previous tag (each a Conventional-Commit line with
+   its PR number), newest work last:
+   ```sh
+   git log vPREV..vX.Y.Z --reverse --pretty='- %s' | grep -v '^- chore(release)'
+   ```
 
 Tags are the contract: TPM users can pin `set -g @plugin 'edubizh/emux#vX.Y.Z'`
 to freeze a known-good set of bindings.
