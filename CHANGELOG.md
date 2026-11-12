@@ -6,6 +6,8 @@ All notable changes to emux are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-12
+
 ### Added
 - `bin/emux-ticker <PAIR>` — a live crypto price dashboard for a single pane: a
   big figlet banner of the asset (green up / red down), the price, the `24h`-labelled
@@ -55,5 +57,6 @@ any of it requires a major bump.
 - Project docs: `README`, `CONTRIBUTING`, this changelog, PR template, and an
   MIT `LICENSE`.
 
-[Unreleased]: https://github.com/edubizh/emux/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/edubizh/emux/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/edubizh/emux/releases/tag/v1.1.0
 [1.0.0]: https://github.com/edubizh/emux/releases/tag/v1.0.0
