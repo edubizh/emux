@@ -7,6 +7,14 @@ All notable changes to emux are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- `bin/emux-ticker <PAIR>` — a live crypto price dashboard for a single pane: a
+  big figlet banner of the asset (green up / red down), the price, 24h % change
+  and volume. The price is the **median of three exchange websocket feeds**
+  (Gemini, Coinbase, Kraken), so it keeps working if one vendor drops — a health
+  line shows how many are live (`3/3`). 24h %/volume come from Gemini REST. Free,
+  no API keys. Run it in several split panes to watch multiple assets at once.
+  Requires `websocat`, `jq`, `figlet`. The first piece of emux's "finance
+  template" direction (crypto first; stocks and prediction markets later).
 - `⌥ Shift ;` / `⌥ Shift '` — move a whole vertical wall together: the active pane
   and its stacked column companions resize as one, so a column (e.g. both right
   panes of a 2×2) moves in sync. Works even when panes are offset or the grid is
