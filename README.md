@@ -52,7 +52,8 @@ New panes open in the current pane's working directory.
 ### Navigate panes
 | Keys | Action |
 |------|--------|
-| `⌥ Tab` | Cycle panes **clockwise** around the screen |
+| `⌥ Tab` | Cycle focus **clockwise** around the screen |
+| `⌥ q` | **Move** the current pane clockwise (swap + follow) — tap to walk it around the grid |
 
 ### Resize panes
 | Keys | Action |

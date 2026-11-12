@@ -17,6 +17,12 @@ tmux bind-key -n M-, split-window -v -c "#{pane_current_path}"   # stacked
 # --- Navigate: Option+Tab = next pane CLOCKWISE (see bin/emux-pane-cycle) ---
 tmux bind-key -n M-Tab run-shell "$CYCLE"
 
+# --- Move: Option+q = MOVE the current pane one slot clockwise (swap + follow) ---
+# The "move" twin of Option+Tab: it walks the pane around the grid in the same
+# clockwise order, so you can shuffle e.g. ticker panes into place. See
+# bin/emux-pane-cycle's move mode.
+tmux bind-key -n M-q run-shell "$CYCLE move"
+
 # --- Resize panes (no prefix) ---
 # NB: ';' is tmux's command separator, so an unescaped "M-;" ends the bind-key
 # command early ("unknown key: M-") and the binding is silently dropped. Escape
