@@ -48,14 +48,14 @@ fi
 poll=${2:-20}
 
 # Split the pair into base + quote (btcusd -> BTC + USD; defaults to USD).
-in=$(lower "$pair_raw")
+in=$(lower "$pair_raw" | tr -cd 'a-z0-9') # BTC-USD / btc/usd / junk -> btcusd
 base=$in
 quote=usd
 for q in usdc usdt gusd usd dai eur gbp sgd btc eth; do
 	case "$in" in
 	*"$q")
 		stripped=${in%"$q"}
-		if [ -n "$stripped" ]; then
+		if [ "${#stripped}" -ge 2 ]; then # a 1-char remainder isn't a base (gusd)
 			base=$stripped
 			quote=$q
 			break
@@ -281,6 +281,20 @@ if [ -n "${EMUX_AGG_FIXTURE:-}" ]; then
 	src="$EMUX_AGG_FIXTURE"
 else
 	src="$tmpdir/out"
+
+	for d in websocat jq curl; do
+		command -v "$d" >/dev/null 2>&1 ||
+			{ echo "emux-ticker: missing required dependency: $d" >&2; exit 1; }
+	done
+	# Reject unknown tickers before touching the screen. Fail open if Gemini's
+	# symbol list is unreachable, so a network blip can't block a real pair.
+	syms=$(curl -s --max-time 10 -H "User-Agent: $UA" "$API/symbols")
+	if [ -n "$syms" ] && ! printf '%s' "$syms" |
+		jq -e --arg p "$pair" 'index($p)' >/dev/null 2>&1; then
+		echo "emux-ticker: unknown pair '$pair' (not listed on Gemini)" >&2
+		exit 1
+	fi
+
 	mkfifo "$src" || exit 1
 
 	# one producer per selected vendor: stream prices, tag with vendor, reconnect
@@ -353,8 +367,9 @@ while :; do
 			;;
 		esac
 	else
-		rc=$?
-		[ "$rc" -gt 128 ] && continue # read timed out: loop so traps can run
-		break                         # EOF: all writers gone
+		# A failed read is a 1s timeout or signal-interrupt; on bash 3.2 that is
+		# indistinguishable from EOF, so never break here — only Ctrl-C (the
+		# signal trap) exits. The finite offline fixture is the one real EOF.
+		[ -n "${EMUX_AGG_FIXTURE:-}" ] && break
 	fi
 done <"$src"
