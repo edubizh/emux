@@ -65,7 +65,7 @@ for q in usdc usdt gusd usd dai eur gbp sgd btc eth; do
 done
 BASE=$(upper "$base")
 QUOTE=$(upper "$quote")
-pair=$(lower "$BASE$QUOTE") # gemini REST/ws symbol, e.g. btcusd
+pair="$base$quote"          # gemini REST/ws symbol, e.g. btcusd
 pair_up="$BASE$QUOTE"       # gemini pricefeed pair, e.g. BTCUSD
 
 if [ "${EMUX_PRINT_BASE:-}" = 1 ]; then
@@ -97,7 +97,7 @@ if [ "${EMUX_NO_COLOR:-}" = 1 ] || [ -z "${TERM:-}" ]; then
 else
 	GREEN=$(tput setaf 2 2>/dev/null || printf '\033[32m')
 	RED=$(tput setaf 1 2>/dev/null || printf '\033[31m')
-	DIM=$(tput setaf 8 2>/dev/null || printf '\033[2m')
+	DIM=$(tput dim 2>/dev/null || printf '\033[2m')
 	RESET=$(tput sgr0 2>/dev/null || printf '\033[0m')
 fi
 if [ "${EMUX_NO_CLEAR:-}" = 1 ]; then
@@ -251,7 +251,6 @@ draw_agg() {
 	oifs=$IFS
 	IFS=,
 	for v in $VENDORS; do
-		IFS=$oifs
 		total=$((total + 1))
 		case "$v" in
 		gemini) pp=$p_gemini tt=$t_gemini ;;
@@ -263,12 +262,11 @@ draw_agg() {
 			prices="$prices $pp"
 			live=$((live + 1))
 		fi
-		IFS=,
 	done
 	IFS=$oifs
 	# shellcheck disable=SC2086
 	med=$(median $prices)
-	_s=$(cat "$state_file" 2>/dev/null)
+	_s=$(<"$state_file")
 	render "$med" "${_s%%"$tab"*}" "${_s##*"$tab"}" "median · $live/$total live"
 }
 
@@ -301,20 +299,19 @@ else
 	oifs=$IFS
 	IFS=,
 	for v in $VENDORS; do
-		IFS=$oifs
 		url=$(v_url "$v")
 		sub=$(v_sub "$v")
 		filt=$(v_filter "$v")
 		[ -n "$url" ] || continue
 		infifo="$tmpdir/in.$v"
-		mkfifo "$infifo" 2>/dev/null
+		mkfifo "$infifo" || exit 1
 		(
 			while :; do
 				# writer: send subscribe (if any), then hold stdin open so
 				# websocat (which exits on stdin EOF) stays connected.
 				(
 					[ -n "$sub" ] && printf '%s\n' "$sub"
-					while :; do sleep 60; done
+					exec sleep 2147483647 # one killable process, no orphan child
 				) >"$infifo" &
 				w=$!
 				websocat "$url" <"$infifo" 2>/dev/null |
@@ -327,7 +324,6 @@ else
 			done
 		) >"$src" 2>/dev/null &
 		producer_pids="$producer_pids $!"
-		IFS=,
 	done
 	IFS=$oifs
 
@@ -342,6 +338,7 @@ else
 
 	printf '%s' "$ALT_ON$CUR_HIDE" # give the dashboard its own isolated screen
 	alt=1
+	trap 'draw_agg' WINCH # repaint immediately when the pane is resized
 	poll_state
 	draw_agg
 fi
