@@ -101,11 +101,15 @@ else
 	RESET=$(tput sgr0 2>/dev/null || printf '\033[0m')
 fi
 if [ "${EMUX_NO_CLEAR:-}" = 1 ]; then
-	C_HOME='' C_EOL='' C_EOS=''
+	C_HOME='' C_EOL='' C_EOS='' ALT_ON='' ALT_OFF='' CUR_HIDE='' CUR_SHOW=''
 else
-	C_HOME=$(printf '\033[H')  # cursor to top-left (redraw in place, no flicker)
-	C_EOL=$(printf '\033[K')   # clear to end of line
-	C_EOS=$(printf '\033[J')   # clear to end of screen
+	C_HOME=$(printf '\033[H')          # cursor to top-left (redraw in place)
+	C_EOL=$(printf '\033[K')           # clear to end of line
+	C_EOS=$(printf '\033[J')           # clear to end of screen
+	ALT_ON=$(printf '\033[?1049h')     # switch to the alternate screen buffer
+	ALT_OFF=$(printf '\033[?1049l')    # restore the normal screen on exit
+	CUR_HIDE=$(printf '\033[?25l')     # hide the cursor while streaming
+	CUR_SHOW=$(printf '\033[?25h')
 fi
 
 # --- banner (rendered once, reused every frame) ---
@@ -215,9 +219,11 @@ killtree() {
 	kill -KILL "$1" 2>/dev/null
 }
 cleaned=0
+alt=0
 cleanup() {
 	[ "$cleaned" = 1 ] && return
 	cleaned=1
+	[ "$alt" = 1 ] && printf '%s' "$CUR_SHOW$ALT_OFF" # restore the normal screen
 	unset IFS       # the signal can land mid-parse (IFS=,) — restore splitting
 	exec 2>/dev/null # hush bash's "Killed" job notices as we reap the feeds
 	# Freeze every feed loop FIRST so none can respawn a websocat mid-teardown,
@@ -320,6 +326,8 @@ else
 	) >"$src" 2>/dev/null &
 	producer_pids="$producer_pids $!"
 
+	printf '%s' "$ALT_ON$CUR_HIDE" # give the dashboard its own isolated screen
+	alt=1
 	poll_state
 	draw_agg
 fi
