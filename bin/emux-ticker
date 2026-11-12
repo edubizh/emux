@@ -48,14 +48,14 @@ fi
 poll=${2:-20}
 
 # Split the pair into base + quote (btcusd -> BTC + USD; defaults to USD).
-in=$(lower "$pair_raw")
+in=$(lower "$pair_raw" | tr -cd 'a-z0-9') # BTC-USD / btc/usd / junk -> btcusd
 base=$in
 quote=usd
 for q in usdc usdt gusd usd dai eur gbp sgd btc eth; do
 	case "$in" in
 	*"$q")
 		stripped=${in%"$q"}
-		if [ -n "$stripped" ]; then
+		if [ "${#stripped}" -ge 2 ]; then # a 1-char remainder isn't a base (gusd)
 			base=$stripped
 			quote=$q
 			break
@@ -65,7 +65,7 @@ for q in usdc usdt gusd usd dai eur gbp sgd btc eth; do
 done
 BASE=$(upper "$base")
 QUOTE=$(upper "$quote")
-pair=$(lower "$BASE$QUOTE") # gemini REST/ws symbol, e.g. btcusd
+pair="$base$quote"          # gemini REST/ws symbol, e.g. btcusd
 pair_up="$BASE$QUOTE"       # gemini pricefeed pair, e.g. BTCUSD
 
 if [ "${EMUX_PRINT_BASE:-}" = 1 ]; then
@@ -97,7 +97,7 @@ if [ "${EMUX_NO_COLOR:-}" = 1 ] || [ -z "${TERM:-}" ]; then
 else
 	GREEN=$(tput setaf 2 2>/dev/null || printf '\033[32m')
 	RED=$(tput setaf 1 2>/dev/null || printf '\033[31m')
-	DIM=$(tput setaf 8 2>/dev/null || printf '\033[2m')
+	DIM=$(tput dim 2>/dev/null || printf '\033[2m')
 	RESET=$(tput sgr0 2>/dev/null || printf '\033[0m')
 fi
 if [ "${EMUX_NO_CLEAR:-}" = 1 ]; then
@@ -251,7 +251,6 @@ draw_agg() {
 	oifs=$IFS
 	IFS=,
 	for v in $VENDORS; do
-		IFS=$oifs
 		total=$((total + 1))
 		case "$v" in
 		gemini) pp=$p_gemini tt=$t_gemini ;;
@@ -263,12 +262,11 @@ draw_agg() {
 			prices="$prices $pp"
 			live=$((live + 1))
 		fi
-		IFS=,
 	done
 	IFS=$oifs
 	# shellcheck disable=SC2086
 	med=$(median $prices)
-	_s=$(cat "$state_file" 2>/dev/null)
+	_s=$(<"$state_file")
 	render "$med" "${_s%%"$tab"*}" "${_s##*"$tab"}" "median · $live/$total live"
 }
 
@@ -281,26 +279,39 @@ if [ -n "${EMUX_AGG_FIXTURE:-}" ]; then
 	src="$EMUX_AGG_FIXTURE"
 else
 	src="$tmpdir/out"
+
+	for d in websocat jq curl; do
+		command -v "$d" >/dev/null 2>&1 ||
+			{ echo "emux-ticker: missing required dependency: $d" >&2; exit 1; }
+	done
+	# Reject unknown tickers before touching the screen. Fail open if Gemini's
+	# symbol list is unreachable, so a network blip can't block a real pair.
+	syms=$(curl -s --max-time 10 -H "User-Agent: $UA" "$API/symbols")
+	if [ -n "$syms" ] && ! printf '%s' "$syms" |
+		jq -e --arg p "$pair" 'index($p)' >/dev/null 2>&1; then
+		echo "emux-ticker: unknown pair '$pair' (not listed on Gemini)" >&2
+		exit 1
+	fi
+
 	mkfifo "$src" || exit 1
 
 	# one producer per selected vendor: stream prices, tag with vendor, reconnect
 	oifs=$IFS
 	IFS=,
 	for v in $VENDORS; do
-		IFS=$oifs
 		url=$(v_url "$v")
 		sub=$(v_sub "$v")
 		filt=$(v_filter "$v")
 		[ -n "$url" ] || continue
 		infifo="$tmpdir/in.$v"
-		mkfifo "$infifo" 2>/dev/null
+		mkfifo "$infifo" || exit 1
 		(
 			while :; do
 				# writer: send subscribe (if any), then hold stdin open so
 				# websocat (which exits on stdin EOF) stays connected.
 				(
 					[ -n "$sub" ] && printf '%s\n' "$sub"
-					while :; do sleep 60; done
+					exec sleep 2147483647 # one killable process, no orphan child
 				) >"$infifo" &
 				w=$!
 				websocat "$url" <"$infifo" 2>/dev/null |
@@ -313,7 +324,6 @@ else
 			done
 		) >"$src" 2>/dev/null &
 		producer_pids="$producer_pids $!"
-		IFS=,
 	done
 	IFS=$oifs
 
@@ -328,6 +338,7 @@ else
 
 	printf '%s' "$ALT_ON$CUR_HIDE" # give the dashboard its own isolated screen
 	alt=1
+	trap 'draw_agg' WINCH # repaint immediately when the pane is resized
 	poll_state
 	draw_agg
 fi
@@ -353,8 +364,9 @@ while :; do
 			;;
 		esac
 	else
-		rc=$?
-		[ "$rc" -gt 128 ] && continue # read timed out: loop so traps can run
-		break                         # EOF: all writers gone
+		# A failed read is a 1s timeout or signal-interrupt; on bash 3.2 that is
+		# indistinguishable from EOF, so never break here — only Ctrl-C (the
+		# signal trap) exits. The finite offline fixture is the one real EOF.
+		[ -n "${EMUX_AGG_FIXTURE:-}" ] && break
 	fi
 done <"$src"
