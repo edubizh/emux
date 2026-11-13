@@ -25,11 +25,14 @@
 #   EMUX_PRINT_MEDIAN="a b c"  print the median of those numbers and exit
 #   EMUX_ONCE=1           render one frame from EMUX_PRICE/EMUX_STATE and exit
 #   EMUX_PRICE=<n>        price to render in once-mode
-#   EMUX_STATE="<pct> <vol> [hi lo open bid ask]"  inject polled stats, skip curl
+#   EMUX_STATE="<pct> <vol> [hi lo bid ask]"  inject polled stats, skipping curl
 #   EMUX_AGG_FIXTURE=<f>  replay "vendor<TAB>price" lines (no network) and exit
 #   EMUX_VENDORS=a,b      restrict/choose price sources
 #   EMUX_LIVE_WINDOW=<s>  seconds a vendor stays "live" after its last price
 #   EMUX_COLS=<n> EMUX_LINES=<n>  force the pane size (else read from the tty)
+#   EMUX_HISTORY="p1 p2 .."  seed the chart's price series (oldest->newest)
+#   EMUX_CHART_H=<n>      force the chart body height (0 hides it)
+#   EMUX_VIEW=chart|book  pick which body the pane renders
 #   EMUX_NO_COLOR=1       disable ANSI color
 #   EMUX_NO_CLEAR=1       do not emit cursor/clear control codes
 #   EMUX_NO_FIGLET=1      force the plain-text banner fallback
@@ -74,6 +77,8 @@ SGN='$'; [ "$QUOTE" = USD ] || SGN='' # money prefix: $ only for USD-quoted pair
 # Polled stat state, owned by the consumer shell (poll_state updates it, or the
 # once/fixture paths seed it). Kept last-good so a flaky poll never blanks a pane.
 s_pct='' s_vol='' s_hi='' s_lo='' s_bid='' s_ask=''
+chart_base=${EMUX_HISTORY:-} # 24h hourly price series for the chart (oldest->newest)
+view=${EMUX_VIEW:-chart}     # which body fills the pane: chart | book
 
 if [ "${EMUX_PRINT_BASE:-}" = 1 ]; then
 	printf '%s\n' "$BASE"
@@ -193,6 +198,37 @@ spreadbps() {
 	}'
 }
 
+# spark <series> <width> <height> — a block-eighths area chart of the price
+# series (height 1 = sparkline, taller = a filled mountain). Byte-safe: the glyph
+# ramp is split on spaces, never split("",...) which mangles UTF-8 on BSD awk.
+spark() {
+	[ -n "$1" ] && [ "${3:-0}" -gt 0 ] || return 0
+	awk -v series="$1" -v width="$2" -v height="$3" 'BEGIN {
+		split("▁ ▂ ▃ ▄ ▅ ▆ ▇ █", ramp, " ")
+		n = split(series, a, " "); if (n == 0) exit
+		if (width < 1) width = 1
+		start = (n > width) ? n - width + 1 : 1    # keep the most recent <width> points
+		lo = a[start] + 0; hi = a[start] + 0
+		for (i = start; i <= n; i++) {
+			if (a[i] + 0 < lo) lo = a[i] + 0
+			if (a[i] + 0 > hi) hi = a[i] + 0
+		}
+		rng = (hi - lo == 0) ? 1 : hi - lo          # flat series -> avoid /0
+		levels = height * 8
+		for (row = height; row >= 1; row--) {
+			line = ""
+			for (i = start; i <= n; i++) {
+				q = int((a[i] - lo) / rng * (levels - 1) + 0.5)
+				cell = q - (row - 1) * 8
+				if (cell >= 8) line = line ramp[8]
+				else if (cell <= 0) line = line " "
+				else line = line ramp[cell]
+			}
+			print line
+		}
+	}'
+}
+
 # --- current pane size (ground truth via stty; tput/$COLUMNS are static here) ---
 # In a real pane stdout is a tty, so ask the terminal line discipline. Under
 # tests/pipes it is not a tty, so fall back to a roomy 80x24 (or an explicit
@@ -267,7 +303,25 @@ render() {
 		addline "$_vl$RESET"
 	fi
 
-	[ "$lines" -ge 3 ] && [ -n "$_health" ] && addline "  $DIM$_health$RESET"
+	# body: the active view fills the rows between the stats and the footer. The
+	# footer (health) is reserved first so the body never pushes it off-screen.
+	_foot=0
+	[ "$lines" -ge 3 ] && [ -n "$_health" ] && _foot=1
+	_bh=$((lines - _nlines - _foot))
+	[ -n "${EMUX_CHART_H:-}" ] && _bh=$EMUX_CHART_H
+	_cw=$((cols - 2)); [ "$_cw" -lt 1 ] && _cw=1
+	if [ "$view" = chart ] && [ "$_bh" -ge 1 ]; then
+		_series=$chart_base
+		[ -n "$_price" ] && _series="$chart_base $_price" # live tip tracks the median
+		_chart=$(spark "$_series" "$_cw" "$_bh")
+		if [ -n "$_chart" ]; then
+			while IFS= read -r _cl; do addline "  $col$_cl$RESET"; done <<EOF
+$_chart
+EOF
+		fi
+	fi
+
+	[ "$_foot" = 1 ] && addline "  $DIM$_health$RESET"
 
 	printf '%s%s%s' "$C_HOME" "$_frame" "$C_EOS"
 }
@@ -323,12 +377,14 @@ poll_state() {
 	_lo=$(printf '%s' "$_tk" | jq -r '.low // empty' 2>/dev/null)
 	_bd=$(printf '%s' "$_tk" | jq -r '.bid // empty' 2>/dev/null)
 	_ak=$(printf '%s' "$_tk" | jq -r '.ask // empty' 2>/dev/null)
+	_ch=$(printf '%s' "$_tk" | jq -r '(.changes // []) | reverse | @tsv' 2>/dev/null | tr '\t' ' ')
 	[ -n "$_p" ] && s_pct=$_p
 	[ -n "$_v" ] && s_vol=$_v
 	[ -n "$_hi" ] && s_hi=$_hi
 	[ -n "$_lo" ] && s_lo=$_lo
 	[ -n "$_bd" ] && s_bid=$_bd
 	[ -n "$_ak" ] && s_ask=$_ak
+	[ -n "$_ch" ] && chart_base=$_ch
 }
 
 # tmp workspace + cleanup

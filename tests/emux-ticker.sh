@@ -94,5 +94,24 @@ nonusd=$(EMUX_ONCE=1 EMUX_NO_COLOR=1 EMUX_NO_CLEAR=1 EMUX_PRICE=0.028 \
 check  "non-USD shows bare price" '0.03'  "$nonusd"
 absent "non-USD omits dollar sign" '$0.03' "$nonusd"
 
+# --- in-pane chart from injected history (byte-safe block glyphs) ---
+chartout=$(EMUX_ONCE=1 EMUX_NO_COLOR=1 EMUX_NO_CLEAR=1 EMUX_PRICE=34 \
+	EMUX_STATE="0.05 1" EMUX_COLS=24 EMUX_CHART_H=4 \
+	EMUX_HISTORY="1 2 3 5 8 13 21 34 21 13 8 5 3 2 1" "$T" btcusd)
+check "chart renders peak block" '█' "$chartout"
+check "chart renders low block"  '▁' "$chartout"
+
+# --- chart degrades to a one-row sparkline ---
+spark1=$(EMUX_ONCE=1 EMUX_NO_COLOR=1 EMUX_NO_CLEAR=1 EMUX_PRICE=71376 \
+	EMUX_STATE="0.02 1" EMUX_COLS=30 EMUX_CHART_H=1 \
+	EMUX_HISTORY="68222 68836 69002 69492 70191 70866 71376" "$T" btcusd)
+check "sparkline renders a glyph" '▇' "$spark1"
+
+# --- chart suppressed when there is no height budget ---
+nochart=$(EMUX_ONCE=1 EMUX_NO_COLOR=1 EMUX_NO_CLEAR=1 EMUX_PRICE=34 \
+	EMUX_STATE="0.05 1" EMUX_COLS=24 EMUX_CHART_H=0 \
+	EMUX_HISTORY="1 2 3 5 8 13 21 34" "$T" btcusd)
+absent "no chart at height 0" '█' "$nochart"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
