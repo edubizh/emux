@@ -25,10 +25,11 @@
 #   EMUX_PRINT_MEDIAN="a b c"  print the median of those numbers and exit
 #   EMUX_ONCE=1           render one frame from EMUX_PRICE/EMUX_STATE and exit
 #   EMUX_PRICE=<n>        price to render in once-mode
-#   EMUX_STATE="<pct> <vol>"  inject 24h % (decimal) and volume, skipping curl
+#   EMUX_STATE="<pct> <vol> [hi lo open bid ask]"  inject polled stats, skip curl
 #   EMUX_AGG_FIXTURE=<f>  replay "vendor<TAB>price" lines (no network) and exit
 #   EMUX_VENDORS=a,b      restrict/choose price sources
 #   EMUX_LIVE_WINDOW=<s>  seconds a vendor stays "live" after its last price
+#   EMUX_COLS=<n> EMUX_LINES=<n>  force the pane size (else read from the tty)
 #   EMUX_NO_COLOR=1       disable ANSI color
 #   EMUX_NO_CLEAR=1       do not emit cursor/clear control codes
 #   EMUX_NO_FIGLET=1      force the plain-text banner fallback
@@ -36,6 +37,7 @@ set -u
 
 UA='Mozilla/5.0'
 API='https://api.gemini.com/v1'
+API2='https://api.gemini.com/v2'
 
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 upper() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]'; }
@@ -67,6 +69,11 @@ BASE=$(upper "$base")
 QUOTE=$(upper "$quote")
 pair="$base$quote"          # gemini REST/ws symbol, e.g. btcusd
 pair_up="$BASE$QUOTE"       # gemini pricefeed pair, e.g. BTCUSD
+SGN='$'; [ "$QUOTE" = USD ] || SGN='' # money prefix: $ only for USD-quoted pairs
+
+# Polled stat state, owned by the consumer shell (poll_state updates it, or the
+# once/fixture paths seed it). Kept last-good so a flaky poll never blanks a pane.
+s_pct='' s_vol='' s_hi='' s_lo='' s_bid='' s_ask=''
 
 if [ "${EMUX_PRINT_BASE:-}" = 1 ]; then
 	printf '%s\n' "$BASE"
@@ -163,6 +170,29 @@ abbr() { # 154.46 / 2.00M / 1.23B
 	}'
 }
 
+# ├──●───┤ bar: where <last> sits within the 24h [<low>,<high>] range (width <w>).
+rangebar() {
+	awk -v last="$1" -v lo="$2" -v hi="$3" -v w="$4" 'BEGIN {
+		if (w < 3) w = 3
+		inner = w - 2
+		if (hi + 0 <= lo + 0) pos = 0.5
+		else { pos = (last - lo) / (hi - lo); if (pos < 0) pos = 0; if (pos > 1) pos = 1 }
+		mark = int(pos * (inner - 1) + 0.5)
+		s = "├"
+		for (i = 0; i < inner; i++) s = s (i == mark ? "●" : "─")
+		printf "%s┤", s
+	}'
+}
+# bid/ask spread in basis points (prints nothing if either side is missing/zero).
+spreadbps() {
+	awk -v b="$1" -v a="$2" 'BEGIN {
+		if (b + 0 <= 0 || a + 0 <= 0) exit
+		mid = (a + b) / 2
+		if (mid <= 0) exit
+		printf "%.1f", (a - b) / mid * 10000
+	}'
+}
+
 # --- current pane size (ground truth via stty; tput/$COLUMNS are static here) ---
 # In a real pane stdout is a tty, so ask the terminal line discipline. Under
 # tests/pipes it is not a tty, so fall back to a roomy 80x24 (or an explicit
@@ -191,30 +221,28 @@ addline() {
 	_nlines=$((_nlines + 1))
 }
 
-# render <price> <pct-decimal> <volume> [health] — assemble one reflowed frame
-# that fits the current pane and degrades (drop banner, then stats) when short.
+# render <price> [health] — assemble one reflowed frame from the live price and
+# the polled stat globals; fits the pane and degrades (drop banner/stats) short.
 render() {
 	_price=${1:-}
-	_pct=${2:-}
-	_vol=${3:-}
-	_health=${4:-}
+	_health=${2:-}
 
-	case "$_pct" in
+	case "$s_pct" in
 	'') col=$DIM arrow='·' pctd='—' ;;
-	-*) col=$RED arrow='▼' pctd=$(pctfmt "$_pct") ;;
-	*) col=$GREEN arrow='▲' pctd=$(pctfmt "$_pct") ;;
+	-*) col=$RED arrow='▼' pctd=$(pctfmt "$s_pct") ;;
+	*) col=$GREEN arrow='▲' pctd=$(pctfmt "$s_pct") ;;
 	esac
-	if [ -n "$_price" ]; then priced='$'$(commafy "$_price"); else priced='—'; fi
-	if [ -n "$_vol" ]; then vold='$'$(abbr "$_vol"); else vold='—'; fi
+	if [ -n "$_price" ]; then priced=$SGN$(commafy "$_price"); else priced='—'; fi
+	if [ -n "$s_vol" ]; then vold=$SGN$(abbr "$s_vol"); else vold='—'; fi
 	tf=''
-	[ -n "$_pct" ] && tf=" ${DIM}24h${RESET}" # label the % with its timeframe
+	[ -n "$s_pct" ] && tf=" ${DIM}24h${RESET}" # label the % with its timeframe
 
 	get_size
 	_frame='' _nlines=0 max_lines=$lines
 
 	# Banner only when the pane is tall enough for it plus the stat lines;
 	# otherwise drop it first (price line always wins the remaining rows).
-	if [ "$lines" -ge $((BANNER_N + 4)) ]; then
+	if [ "$lines" -ge $((BANNER_N + 5)) ]; then
 		_bi=0
 		while [ "$_bi" -lt "$BANNER_N" ]; do
 			addline "$col${BANNER_L[$_bi]}$RESET"
@@ -223,15 +251,38 @@ render() {
 		addline ''
 	fi
 	addline "  $col$priced$RESET   $arrow $pctd$RESET$tf"
-	[ "$lines" -ge 2 ] && addline "  ${DIM}Vol  $vold$RESET"
+
+	# 24h range: low ├──●──┤ high, marker = where the live price sits today.
+	if [ "$lines" -ge 5 ] && [ -n "$_price" ] && [ -n "$s_hi" ] && [ -n "$s_lo" ]; then
+		addline "  $DIM$SGN$(commafy "$s_lo")$RESET $col$(rangebar "$_price" "$s_lo" "$s_hi" 13)$RESET $DIM$SGN$(commafy "$s_hi")$RESET"
+	fi
+
+	# volume, plus the bid/ask spread in bps when we have both sides of the book.
+	if [ "$lines" -ge 2 ]; then
+		_vl="  ${DIM}Vol  $vold"
+		if [ -n "$s_bid" ] && [ -n "$s_ask" ]; then
+			_sp=$(spreadbps "$s_bid" "$s_ask")
+			[ -n "$_sp" ] && _vl="$_vl · spread $_sp bps"
+		fi
+		addline "$_vl$RESET"
+	fi
+
 	[ "$lines" -ge 3 ] && [ -n "$_health" ] && addline "  $DIM$_health$RESET"
 
 	printf '%s%s%s' "$C_HOME" "$_frame" "$C_EOS"
 }
 
+# seed the stat globals from a space-separated "pct vol [hi lo open bid ask]"
+# (once/fixture/test paths); backward compatible with the old 2-field form.
+seed_state() {
+	# shellcheck disable=SC2086
+	set -- $1
+	s_pct=${1:-} s_vol=${2:-} s_hi=${3:-} s_lo=${4:-} s_bid=${5:-} s_ask=${6:-}
+}
+
 if [ "${EMUX_ONCE:-}" = 1 ]; then
-	s=${EMUX_STATE:-}
-	render "${EMUX_PRICE:-}" "${s%% *}" "${s#* }"
+	seed_state "${EMUX_STATE:-}"
+	render "${EMUX_PRICE:-}"
 	exit 0
 fi
 
@@ -257,20 +308,31 @@ v_filter() { # jq filter: raw ws lines -> price
 	esac
 }
 
-# refresh 24h %/volume (from Gemini REST) into the state file
+# Refresh the polled stats from Gemini REST into the stat globals. Each field is
+# kept last-good (overwritten only when the fetch yields a value), so a flaky poll
+# degrades one number to stale rather than blanking the pane. 24h %/volume keep
+# their original sources; v2/ticker adds high/low/open and the bid/ask.
 poll_state() {
 	_pt=$(curl -s --max-time 10 -H "User-Agent: $UA" "$API/pubticker/$pair")
 	_pf=$(curl -s --max-time 10 -H "User-Agent: $UA" "$API/pricefeed")
-	_vol=$(printf '%s' "$_pt" | jq -r --arg q "$QUOTE" '.volume[$q] // empty' 2>/dev/null)
-	_pct=$(printf '%s' "$_pf" | jq -r --arg p "$pair_up" \
+	_tk=$(curl -s --max-time 10 -H "User-Agent: $UA" "$API2/ticker/$pair")
+	_v=$(printf '%s' "$_pt" | jq -r --arg q "$QUOTE" '.volume[$q] // empty' 2>/dev/null)
+	_p=$(printf '%s' "$_pf" | jq -r --arg p "$pair_up" \
 		'.[] | select(.pair == $p) | .percentChange24h // empty' 2>/dev/null)
-	printf '%s\t%s' "$_pct" "$_vol" >"$state_file"
+	_hi=$(printf '%s' "$_tk" | jq -r '.high // empty' 2>/dev/null)
+	_lo=$(printf '%s' "$_tk" | jq -r '.low // empty' 2>/dev/null)
+	_bd=$(printf '%s' "$_tk" | jq -r '.bid // empty' 2>/dev/null)
+	_ak=$(printf '%s' "$_tk" | jq -r '.ask // empty' 2>/dev/null)
+	[ -n "$_p" ] && s_pct=$_p
+	[ -n "$_v" ] && s_vol=$_v
+	[ -n "$_hi" ] && s_hi=$_hi
+	[ -n "$_lo" ] && s_lo=$_lo
+	[ -n "$_bd" ] && s_bid=$_bd
+	[ -n "$_ak" ] && s_ask=$_ak
 }
 
 # tmp workspace + cleanup
 tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/emux-ticker.XXXXXX") || exit 1
-state_file="$tmpdir/state"
-: >"$state_file"
 tab=$(printf '\t')
 producer_pids=''
 
@@ -327,16 +389,14 @@ draw_agg() {
 	IFS=$oifs
 	# shellcheck disable=SC2086
 	med=$(median $prices)
-	_s=$(<"$state_file")
-	render "$med" "${_s%%"$tab"*}" "${_s##*"$tab"}" "median · $live/$total live"
+	render "$med" "median · $live/$total live"
 }
 
 live_window=${EMUX_LIVE_WINDOW:-10}
 
 # Offline hook: replay captured "vendor<TAB>price" lines, no network. (tests)
 if [ -n "${EMUX_AGG_FIXTURE:-}" ]; then
-	[ -n "${EMUX_STATE:-}" ] &&
-		printf '%s\t%s' "${EMUX_STATE%% *}" "${EMUX_STATE#* }" >"$state_file"
+	[ -n "${EMUX_STATE:-}" ] && seed_state "$EMUX_STATE"
 	src="$EMUX_AGG_FIXTURE"
 else
 	src="$tmpdir/out"

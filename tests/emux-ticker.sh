@@ -22,6 +22,17 @@ check() {
 	fi
 }
 
+# absent <description> <substring-that-must-not-appear> <actual-output>
+absent() {
+	if printf '%s' "$3" | grep -qF -- "$2"; then
+		fail=$((fail + 1))
+		printf 'FAIL - %s\n       unexpected substring: [%s]\n       got: [%s]\n' "$1" "$2" "$3"
+	else
+		pass=$((pass + 1))
+		printf 'ok   - %s\n' "$1"
+	fi
+}
+
 # --- base-asset derivation (banner text) ---
 check "base btcusd -> BTC"   "BTC"  "$(EMUX_PRINT_BASE=1 "$T" btcusd)"
 check "base ethusdc -> ETH"  "ETH"  "$(EMUX_PRINT_BASE=1 "$T" ethusdc)"
@@ -60,6 +71,28 @@ rm -f "$aggf"
 check "median of 3 vendors rendered" '$73,619.63' "$agg"
 check "aggregation keeps polled pct" '+0.81%'      "$agg"
 check "health line shows live count" '3/3 live'    "$agg"
+
+# --- richer stats: 24h high/low + range bar + bid/ask spread ---
+# EMUX_STATE extended to "pct vol hi lo bid ask" (price sits near the low).
+rich=$(EMUX_ONCE=1 EMUX_NO_COLOR=1 EMUX_NO_CLEAR=1 EMUX_PRICE=68115.41 \
+	EMUX_STATE="-0.0418 27650000 71433.73 67777 68115.40 68115.42" "$T" btcusd)
+check "stats shows 24h high"   '$71,433.73' "$rich"
+check "stats shows 24h low"    '$67,777.00' "$rich"
+check "range bar has a marker" '●'          "$rich"
+check "spread shown in bps"    'spread'     "$rich"
+
+# --- old 2-field EMUX_STATE still renders identically (regression guard) ---
+compat=$(EMUX_ONCE=1 EMUX_NO_COLOR=1 EMUX_NO_CLEAR=1 EMUX_PRICE=74035.8 \
+	EMUX_STATE="0.0081 154.45948915" "$T" btcusd)
+check  "2-field state still formats pct" '+0.81%'  "$compat"
+check  "2-field state still formats vol" '$154.46' "$compat"
+absent "no range bar without hi/lo"      '●'       "$compat"
+
+# --- non-USD quote (ethbtc) drops the $ prefix (agnostic pricing) ---
+nonusd=$(EMUX_ONCE=1 EMUX_NO_COLOR=1 EMUX_NO_CLEAR=1 EMUX_PRICE=0.028 \
+	EMUX_STATE="0.01 1234" "$T" ethbtc)
+check  "non-USD shows bare price" '0.03'  "$nonusd"
+absent "non-USD omits dollar sign" '$0.03' "$nonusd"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
