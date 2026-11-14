@@ -219,20 +219,25 @@ spark() {
 		split("▁ ▂ ▃ ▄ ▅ ▆ ▇ █", ramp, " ")
 		n = split(series, a, " "); if (n == 0) exit
 		if (width < 1) width = 1
-		start = (n > width) ? n - width + 1 : 1    # keep the most recent <width> points
-		lo = a[start] + 0; hi = a[start] + 0
-		for (i = start; i <= n; i++) {
-			if (a[i] + 0 < lo) lo = a[i] + 0
-			if (a[i] + 0 > hi) hi = a[i] + 0
+		# Resample the series to exactly <width> columns so the chart always fills
+		# the pane width: linear interpolation stretches it, sampling shrinks it.
+		for (c = 0; c < width; c++) {
+			if (width == 1 || n == 1) { v[c] = a[n] + 0; continue }
+			pos = c * (n - 1) / (width - 1)
+			i0 = int(pos); frac = pos - i0
+			i1 = (i0 + 1 < n) ? i0 + 1 : i0
+			v[c] = a[i0 + 1] * (1 - frac) + a[i1 + 1] * frac
 		}
+		lo = v[0]; hi = v[0]
+		for (c = 0; c < width; c++) { if (v[c] < lo) lo = v[c]; if (v[c] > hi) hi = v[c] }
 		flat = (hi == lo)                           # single point or dead-flat series
 		rng = flat ? 1 : hi - lo                    # avoid /0
 		levels = height * 8
 		for (row = height; row >= 1; row--) {
 			line = ""
-			for (i = start; i <= n; i++) {
+			for (c = 0; c < width; c++) {
 				# a flat series draws a baseline (lowest glyph) rather than blank cells
-				q = flat ? 1 : int((a[i] - lo) / rng * (levels - 1) + 0.5)
+				q = flat ? 1 : int((v[c] - lo) / rng * (levels - 1) + 0.5)
 				cell = q - (row - 1) * 8
 				if (cell >= 8) line = line ramp[8]
 				else if (cell <= 0) line = line " "
@@ -357,9 +362,13 @@ render() {
 	fi
 	addline "  $col$priced$RESET   $arrow $pctd$RESET$tf"
 
-	# 24h range: low ├──●──┤ high, marker = where the live price sits today.
+	# 24h range: low ├──●──┤ high — the bar flexes to fill the line width.
 	if [ "$lines" -ge 5 ] && [ -n "$_price" ] && [ -n "$s_hi" ] && [ -n "$s_lo" ]; then
-		addline "  $DIM$SGN$(commafy "$s_lo")$RESET $col$(rangebar "$_price" "$s_lo" "$s_hi" 13)$RESET $DIM$SGN$(commafy "$s_hi")$RESET"
+		_lol=$SGN$(commafy "$s_lo")
+		_hil=$SGN$(commafy "$s_hi")
+		_rbw=$((cols - 5 - ${#_lol} - ${#_hil})) # 2 left margin + 2 spaces + 1 right
+		[ "$_rbw" -lt 11 ] && _rbw=11
+		addline "  $DIM$_lol$RESET $col$(rangebar "$_price" "$s_lo" "$s_hi" "$_rbw")$RESET $DIM$_hil$RESET"
 	fi
 
 	# volume, plus the bid/ask spread in bps when we have both sides of the book.
@@ -378,7 +387,7 @@ render() {
 	[ "$lines" -ge 3 ] && [ -n "$_health" ] && _foot=1
 	_bh=$((lines - _nlines - _foot))
 	[ -n "${EMUX_CHART_H:-}" ] && _bh=$EMUX_CHART_H
-	_cw=$((cols - 2)); [ "$_cw" -lt 1 ] && _cw=1
+	_cw=$((cols - 3)); [ "$_cw" -lt 1 ] && _cw=1 # 2-col left margin + 1-col right
 	if [ "$view" = chart ] && [ "$_bh" -ge 1 ]; then
 		_series=$chart_base
 		[ -n "$_price" ] && _series="$chart_base $_price" # live tip tracks the median
