@@ -107,6 +107,12 @@ spark1=$(EMUX_ONCE=1 EMUX_NO_COLOR=1 EMUX_NO_CLEAR=1 EMUX_PRICE=71376 \
 	EMUX_HISTORY="68222 68836 69002 69492 70191 70866 71376" "$T" btcusd)
 check "sparkline renders a glyph" '▇' "$spark1"
 
+# --- a flat/illiquid series draws a baseline, not a blank chart ---
+flatc=$(EMUX_ONCE=1 EMUX_NO_COLOR=1 EMUX_NO_CLEAR=1 EMUX_PRICE=100 \
+	EMUX_STATE="0 1" EMUX_COLS=20 EMUX_CHART_H=3 \
+	EMUX_HISTORY="100 100 100 100 100" "$T" btcusd)
+check "flat series shows a baseline" '▁' "$flatc"
+
 # --- chart suppressed when there is no height budget ---
 nochart=$(EMUX_ONCE=1 EMUX_NO_COLOR=1 EMUX_NO_CLEAR=1 EMUX_PRICE=34 \
 	EMUX_STATE="0.05 1" EMUX_COLS=24 EMUX_CHART_H=0 \

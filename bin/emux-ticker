@@ -58,6 +58,10 @@ if [ -z "$pair_raw" ]; then
 	exit 2
 fi
 poll=${2:-20}
+# A non-numeric or zero poll would make `sleep "$poll"` fail every iteration and
+# hot-spin the poll loop into a silent request storm; fall back to the default.
+case $poll in '' | *[!0-9]*) poll=20 ;; esac
+case $poll in *[1-9]*) ;; *) poll=20 ;; esac
 
 # Split the pair into base + quote (btcusd -> BTC + USD; defaults to USD).
 in=$(lower "$pair_raw" | tr -cd 'a-z0-9') # BTC-USD / btc/usd / junk -> btcusd
@@ -221,12 +225,14 @@ spark() {
 			if (a[i] + 0 < lo) lo = a[i] + 0
 			if (a[i] + 0 > hi) hi = a[i] + 0
 		}
-		rng = (hi - lo == 0) ? 1 : hi - lo          # flat series -> avoid /0
+		flat = (hi == lo)                           # single point or dead-flat series
+		rng = flat ? 1 : hi - lo                    # avoid /0
 		levels = height * 8
 		for (row = height; row >= 1; row--) {
 			line = ""
 			for (i = start; i <= n; i++) {
-				q = int((a[i] - lo) / rng * (levels - 1) + 0.5)
+				# a flat series draws a baseline (lowest glyph) rather than blank cells
+				q = flat ? 1 : int((a[i] - lo) / rng * (levels - 1) + 0.5)
 				cell = q - (row - 1) * 8
 				if (cell >= 8) line = line ramp[8]
 				else if (cell <= 0) line = line " "
@@ -398,7 +404,7 @@ EOF
 	printf '%s%s%s' "$C_HOME" "$_frame" "$C_EOS"
 }
 
-# seed the stat globals from a space-separated "pct vol [hi lo open bid ask]"
+# seed the stat globals from a space-separated "pct vol [hi lo bid ask]"
 # (once/fixture/test paths); backward compatible with the old 2-field form.
 seed_state() {
 	# shellcheck disable=SC2086
@@ -457,6 +463,7 @@ poll_state() {
 	[ -n "$_bd" ] && s_bid=$_bd
 	[ -n "$_ak" ] && s_ask=$_ak
 	[ -n "$_ch" ] && chart_base=$_ch
+	return 0 # best-effort: an empty last field must not gate the caller's repaint
 }
 
 # tmp workspace + cleanup
@@ -464,6 +471,7 @@ tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/emux-ticker.XXXXXX") || exit 1
 tab=$(printf '\t')
 view_file="$tmpdir/view" # the book poller watches this so it only fetches in book view
 printf '%s' "$view" >"$view_file"
+book_file="$tmpdir/book" # the poller drops the book here; the fifo carries only a sentinel
 producer_pids=''
 
 killtree() {
@@ -601,13 +609,19 @@ else
 	# a BOOK poller refreshes the order book, but ONLY while the book view is
 	# active (it watches $view_file) — no book traffic at all while the chart shows.
 	book_poll=${EMUX_BOOK_POLL:-2}
+	case $book_poll in '' | *[!0-9]*) book_poll=2 ;; esac
+	case $book_poll in *[1-9]*) ;; *) book_poll=2 ;; esac
 	(
 		while :; do
 			if [ "$(<"$view_file")" = book ]; then
 				_bk=$(curl -s --max-time 5 -H "User-Agent: $UA" \
 					"$API/book/$pair?limit_bids=20&limit_asks=20" |
 					jq -c '{a: [.asks[] | [.price, .amount]], b: [.bids[] | [.price, .amount]]}' 2>/dev/null)
-				[ -n "$_bk" ] && printf 'BOOK\t%s\n' "$_bk"
+				# A full book is up to ~1KB — too big to write atomically to the shared
+				# fifo, where it could split and interleave with a concurrent price line.
+				# Drop it in a file (atomic rename) and push only a tiny BOOK sentinel.
+				[ -n "$_bk" ] && printf '%s' "$_bk" >"$tmpdir/book.tmp" &&
+					mv "$tmpdir/book.tmp" "$book_file" && printf 'BOOK\n'
 			fi
 			sleep "$book_poll"
 		done
@@ -645,8 +659,8 @@ while :; do
 	if IFS= read -r -t 1 line; then
 		case "$line" in
 		POLL) poll_state && draw_agg ;;
-		BOOK*)
-			book_json=${line#BOOK"$tab"}
+		BOOK)
+			[ -f "$book_file" ] && book_json=$(<"$book_file")
 			[ "$view" = book ] && draw_agg # only repaint if the book is on screen
 			;;
 		KEY*)
