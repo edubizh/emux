@@ -33,6 +33,8 @@
 #   EMUX_HISTORY="p1 p2 .."  seed the chart's price series (oldest->newest)
 #   EMUX_CHART_H=<n>      force the chart body height (0 hides it)
 #   EMUX_VIEW=chart|book  pick which body the pane renders
+#   EMUX_BOOK='{"a":[..],"b":[..]}'  inject an order book for the book view
+#   EMUX_BOOK_POLL=<s>    order-book refresh interval while in book view (default 2)
 #   EMUX_NO_COLOR=1       disable ANSI color
 #   EMUX_NO_CLEAR=1       do not emit cursor/clear control codes
 #   EMUX_NO_FIGLET=1      force the plain-text banner fallback
@@ -79,6 +81,7 @@ SGN='$'; [ "$QUOTE" = USD ] || SGN='' # money prefix: $ only for USD-quoted pair
 s_pct='' s_vol='' s_hi='' s_lo='' s_bid='' s_ask=''
 chart_base=${EMUX_HISTORY:-} # 24h hourly price series for the chart (oldest->newest)
 view=${EMUX_VIEW:-chart}     # which body fills the pane: chart | book
+book_json=${EMUX_BOOK:-}     # latest compact order book {a:[[p,amt]..],b:[..]}
 
 if [ "${EMUX_PRINT_BASE:-}" = 1 ]; then
 	printf '%s\n' "$BASE"
@@ -229,6 +232,61 @@ spark() {
 	}'
 }
 
+# bookladder <book-json> <width> <height> — asks (red) over bids (green) depth
+# ladder: price | size | a size bar scaled to the largest level shown. Degrades
+# (drop the bar, then the size) on narrow panes; "(book empty)" when there is none.
+bookladder() {
+	[ -n "$1" ] && [ "${3:-0}" -ge 3 ] || return 0
+	printf '%s' "$1" | jq -r '
+		([ (.a // [])[] | "A \(.[0]) \(.[1])" ] + [ (.b // [])[] | "B \(.[0]) \(.[1])" ]) | .[]?
+	' 2>/dev/null | awk -v w="$2" -v h="$3" -v G="$GREEN" -v R="$RED" -v D="$DIM" -v Z="$RESET" '
+		function fsz(x,   v) {
+			v = x + 0
+			if (v >= 1e9) return sprintf("%.2fB", v / 1e9)
+			if (v >= 1e6) return sprintf("%.2fM", v / 1e6)
+			if (v >= 1e3) return sprintf("%.2fK", v / 1e3)
+			if (v >= 1) return sprintf("%.3f", v)      # plain decimals, never 2.5e-05
+			return sprintf("%.4f", v)
+		}
+		function fnum(x,   s) { s = sprintf("%.8f", x + 0); sub(/0+$/, "", s); sub(/\.$/, "", s); return s }
+		function bar(sz,   frac, full, i, s, rem8) {
+			if (bw < 1 || mx <= 0) return ""
+			frac = sz / mx * bw; full = int(frac); s = ""
+			for (i = 0; i < full && i < bw; i++) s = s "█"
+			rem8 = int((frac - full) * 8 + 0.5)
+			if (full < bw && rem8 >= 1) s = s h8[rem8]
+			return s
+		}
+		function emit(clr, price, size,   row) {
+			row = sprintf("  %s%*s%s", clr, pw, price, Z)
+			if (ss) row = row sprintf(" %s%*s%s", D, sw, fsz(size), Z)
+			if (bw > 0) row = row " " clr bar(size) Z
+			print row
+		}
+		BEGIN { na = 0; nb = 0 }
+		$1 == "A" { ap[na] = $2; aa[na] = $3; na++ }
+		$1 == "B" { bp[nb] = $2; ba[nb] = $3; nb++ }
+		END {
+			if (na + nb == 0) { print "  (book empty)"; exit }
+			split("▏ ▎ ▍ ▌ ▋ ▊ ▉ █", h8, " ")
+			lv = int((h - 1) / 2); if (lv < 1) lv = 1
+			la = (na < lv) ? na : lv; lb = (nb < lv) ? nb : lv
+			mx = 0; pw = 0; sw = 0
+			for (i = 0; i < la; i++) { sz = aa[i] + 0; if (sz > mx) mx = sz; if (length(ap[i]) > pw) pw = length(ap[i]); if (length(fsz(sz)) > sw) sw = length(fsz(sz)) }
+			for (i = 0; i < lb; i++) { sz = ba[i] + 0; if (sz > mx) mx = sz; if (length(bp[i]) > pw) pw = length(bp[i]); if (length(fsz(sz)) > sw) sw = length(fsz(sz)) }
+			avail = w - 2
+			ss = (avail >= pw + 1 + sw) ? 1 : 0
+			bw = ss ? (avail - pw - 1 - sw - 1) : 0; if (bw < 1) bw = 0
+			for (i = la - 1; i >= 0; i--) emit(R, ap[i], aa[i])
+			if (la > 0 && lb > 0) {
+				sp = ap[0] - bp[0]; mid = (ap[0] + bp[0]) / 2
+				bps = (mid > 0) ? (sp / mid * 10000) : 0
+				printf "  %sspread %s (%.1f bps)%s\n", D, fnum(sp), bps, Z
+			} else printf "  %s—%s\n", D, Z
+			for (i = 0; i < lb; i++) emit(G, bp[i], ba[i])
+		}'
+}
+
 # --- current pane size (ground truth via stty; tput/$COLUMNS are static here) ---
 # In a real pane stdout is a tty, so ask the terminal line discipline. Under
 # tests/pipes it is not a tty, so fall back to a roomy 80x24 (or an explicit
@@ -319,6 +377,15 @@ render() {
 $_chart
 EOF
 		fi
+	elif [ "$view" = book ] && [ "$_bh" -ge 1 ]; then
+		_ladder=$(bookladder "$book_json" "$cols" "$_bh")
+		if [ -n "$_ladder" ]; then
+			while IFS= read -r _cl; do addline "$_cl"; done <<EOF
+$_ladder
+EOF
+		else
+			addline "  ${DIM}loading order book…$RESET"
+		fi
 	fi
 
 	[ "$_foot" = 1 ] && addline "  $DIM$_health$RESET"
@@ -390,6 +457,8 @@ poll_state() {
 # tmp workspace + cleanup
 tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/emux-ticker.XXXXXX") || exit 1
 tab=$(printf '\t')
+view_file="$tmpdir/view" # the book poller watches this so it only fetches in book view
+printf '%s' "$view" >"$view_file"
 producer_pids=''
 
 killtree() {
@@ -513,6 +582,22 @@ else
 	) >"$src" 2>/dev/null &
 	producer_pids="$producer_pids $!"
 
+	# a BOOK poller refreshes the order book, but ONLY while the book view is
+	# active (it watches $view_file) — no book traffic at all while the chart shows.
+	book_poll=${EMUX_BOOK_POLL:-2}
+	(
+		while :; do
+			if [ "$(<"$view_file")" = book ]; then
+				_bk=$(curl -s --max-time 5 -H "User-Agent: $UA" \
+					"$API/book/$pair?limit_bids=20&limit_asks=20" |
+					jq -c '{a: [.asks[] | [.price, .amount]], b: [.bids[] | [.price, .amount]]}' 2>/dev/null)
+				[ -n "$_bk" ] && printf 'BOOK\t%s\n' "$_bk"
+			fi
+			sleep "$book_poll"
+		done
+	) >"$src" 2>/dev/null &
+	producer_pids="$producer_pids $!"
+
 	printf '%s' "$ALT_ON$CUR_HIDE$AW_OFF" # isolated screen; autowrap off while drawing
 	alt=1
 	trap 'draw_agg' WINCH # repaint immediately when the pane is resized
@@ -527,6 +612,10 @@ while :; do
 	if IFS= read -r -t 1 line; then
 		case "$line" in
 		POLL) poll_state && draw_agg ;;
+		BOOK*)
+			book_json=${line#BOOK"$tab"}
+			[ "$view" = book ] && draw_agg # only repaint if the book is on screen
+			;;
 		'') : ;;
 		*)
 			vendor=${line%%"$tab"*}

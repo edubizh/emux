@@ -113,5 +113,20 @@ nochart=$(EMUX_ONCE=1 EMUX_NO_COLOR=1 EMUX_NO_CLEAR=1 EMUX_PRICE=34 \
 	EMUX_HISTORY="1 2 3 5 8 13 21 34" "$T" btcusd)
 absent "no chart at height 0" '█' "$nochart"
 
+# --- order book view renders a depth ladder (asks over bids + spread) ---
+bookjson='{"a":[["68000.50","0.40"],["68001.00","1.20"],["68002.00","0.08"]],"b":[["67999.90","0.33"],["67998.00","2.01"],["67997.00","0.50"]]}'
+bk=$(EMUX_ONCE=1 EMUX_NO_COLOR=1 EMUX_NO_CLEAR=1 EMUX_PRICE=68000 EMUX_STATE="0.01 1" \
+	EMUX_VIEW=book EMUX_LINES=20 EMUX_COLS=46 EMUX_BOOK="$bookjson" "$T" btcusd)
+check  "book shows best ask"    '68000.50'   "$bk"
+check  "book shows best bid"    '67999.90'   "$bk"
+check  "book shows spread line" 'spread 0.6' "$bk"
+check  "book shows a depth bar" '█'          "$bk"
+absent "book view has no chart glyph" '▁'    "$bk"
+
+# --- empty book shows a placeholder, never crashes ---
+bke=$(EMUX_ONCE=1 EMUX_NO_COLOR=1 EMUX_NO_CLEAR=1 EMUX_PRICE=68000 EMUX_STATE="0.01 1" \
+	EMUX_VIEW=book EMUX_LINES=20 EMUX_COLS=46 EMUX_BOOK='{"a":[],"b":[]}' "$T" btcusd)
+check "empty book shows placeholder" 'book empty' "$bke"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
