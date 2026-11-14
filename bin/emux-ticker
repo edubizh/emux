@@ -19,6 +19,7 @@
 # Usage:
 #   emux-ticker <PAIR> [poll_seconds]        e.g. emux-ticker ethusd 15
 # Pick vendors with EMUX_VENDORS (default all): e.g. EMUX_VENDORS=gemini,kraken
+# Keys (inside the pane): Tab/Space toggle chart<->book · c chart · o book · q quit
 #
 # Test hooks (harmless in normal use; used by tests/emux-ticker.sh):
 #   EMUX_PRINT_BASE=1     print the derived base asset (e.g. BTC) and exit
@@ -35,6 +36,7 @@
 #   EMUX_VIEW=chart|book  pick which body the pane renders
 #   EMUX_BOOK='{"a":[..],"b":[..]}'  inject an order book for the book view
 #   EMUX_BOOK_POLL=<s>    order-book refresh interval while in book view (default 2)
+#   EMUX_NO_KEYS=1        disable the raw-mode key reader (no in-pane toggle)
 #   EMUX_NO_COLOR=1       disable ANSI color
 #   EMUX_NO_CLEAR=1       do not emit cursor/clear control codes
 #   EMUX_NO_FIGLET=1      force the plain-text banner fallback
@@ -467,10 +469,17 @@ killtree() {
 }
 cleaned=0
 alt=0
+stty_saved='' raw=0 # raw-mode key-reader state (set in the key-reader block below)
+restore_tty() {     # put the terminal back into cooked mode (no-op unless raw)
+	[ "$raw" = 1 ] || return 0
+	[ -n "$stty_saved" ] && stty "$stty_saved" </dev/tty 2>/dev/null
+	raw=0
+}
 cleanup() {
 	trap '' INT TERM HUP WINCH # a mashed Ctrl-C / resize must not preempt teardown
 	[ "$cleaned" = 1 ] && return
 	cleaned=1
+	restore_tty # cooked tty FIRST, so even an interrupted teardown leaves a usable shell
 	[ "$alt" = 1 ] && printf '%s' "$CUR_SHOW$AW_ON$ALT_OFF" # restore screen + autowrap
 	unset IFS       # the signal can land mid-parse (IFS=,) — restore splitting
 	exec 2>/dev/null # hush bash's "Killed" job notices as we reap the feeds
@@ -514,7 +523,11 @@ draw_agg() {
 	IFS=$oifs
 	# shellcheck disable=SC2086
 	med=$(median $prices)
-	render "$med" "median · $live/$total live"
+	_hint=''
+	if [ "$raw" = 1 ]; then
+		if [ "$view" = chart ]; then _hint=' · [tab] book'; else _hint=' · [tab] chart'; fi
+	fi
+	render "$med" "median · $live/$total live$_hint"
 }
 
 live_window=${EMUX_LIVE_WINDOW:-10}
@@ -598,6 +611,23 @@ else
 	) >"$src" 2>/dev/null &
 	producer_pids="$producer_pids $!"
 
+	# raw-mode key reader (interactive only; skipped under tests/pipes/no-tty). It
+	# opens /dev/tty ONCE on fd 3 — reopening per key wedges bash 3.2 — and injects
+	# KEY<TAB><byte> into the same fifo. ISIG stays on, so Ctrl-C still fires.
+	if [ -t 1 ] && [ -r /dev/tty ] && [ "${EMUX_NO_KEYS:-}" != 1 ]; then
+		stty_saved=$(stty -g </dev/tty 2>/dev/null)
+		if stty -echo -icanon min 1 time 0 </dev/tty 2>/dev/null; then
+			raw=1
+			(
+				exec 3</dev/tty
+				while IFS= read -r -n1 -u 3 _k; do
+					printf 'KEY\t%s\n' "$_k"
+				done
+			) >"$src" 2>/dev/null &
+			producer_pids="$producer_pids $!"
+		fi
+	fi
+
 	printf '%s' "$ALT_ON$CUR_HIDE$AW_OFF" # isolated screen; autowrap off while drawing
 	alt=1
 	trap 'draw_agg' WINCH # repaint immediately when the pane is resized
@@ -615,6 +645,18 @@ while :; do
 		BOOK*)
 			book_json=${line#BOOK"$tab"}
 			[ "$view" = book ] && draw_agg # only repaint if the book is on screen
+			;;
+		KEY*)
+			_k=${line#KEY"$tab"}
+			case "$_k" in
+			' ' | "$tab") if [ "$view" = chart ]; then view=book; else view=chart; fi ;;
+			c | C) view=chart ;;
+			o | O) view=book ;;
+			q | Q) break ;; # clean quit -> falls through to the EXIT trap
+			*) : ;;         # any other key (incl. arrow ESC-sequences) is ignored
+			esac
+			printf '%s' "$view" >"$view_file" # tell the book poller the new view
+			draw_agg
 			;;
 		'') : ;;
 		*)
