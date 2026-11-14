@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
-# emux-ticker — a live, multi-vendor crypto dashboard for a single tmux pane.
+# emux-ticker — a live, multi-vendor crypto scanner tile for a single tmux pane.
 #
 # (bash, not POSIX sh — it uses a timed `read` so the signal traps that tear
 # down the background feeds fire promptly, and manages several child processes.)
 #
 # Run it inside a pane:  emux-ticker btcusd
-# It shows a big figlet banner of the asset (green when up on the day, red when
-# down), a live price, the 24h % change, 24h volume, and a source-health line.
-# Split panes and run it again with a different pair to watch several assets at
-# once — that is the whole point of hosting it in tmux.
+# It shows a figlet banner (green up / red down), a live price, the 24h % change,
+# a 24h low-high range bar, the bid/ask spread, 24h volume, a source-health line,
+# and a body that toggles (Tab/Space) between a 24h price chart and a live order
+# book. It reflows to the pane size and degrades gracefully when the pane is
+# short or narrow. Split panes and run it again with a different pair to watch
+# several assets at once — that is the whole point of hosting it in tmux.
 #
 # Distributed-systems bit: the price is streamed from SEVERAL exchange
 # websockets at once (Gemini, Coinbase, Kraken) and shown as the MEDIAN of the
 # sources that are currently live. If one vendor drops, it is dropped from the
 # median and the health line shows e.g. "2/3 live"; when it returns, "3/3". All
-# feeds are free and need no API key. 24h %/volume come from Gemini REST.
+# feeds are free and need no API key. The 24h stats, the chart series, and the
+# order book come from Gemini REST.
 #
 # Usage:
 #   emux-ticker <PAIR> [poll_seconds]        e.g. emux-ticker ethusd 15

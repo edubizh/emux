@@ -12,6 +12,20 @@ All notable changes to emux are documented here. The format is based on
   "move" twin of `⌥ Tab`, using the same clockwise order. Repeated presses walk
   the pane around the grid — handy for arranging `emux-ticker` panes. Powered by
   `bin/emux-pane-cycle`'s `move` mode.
+- `emux-ticker` grew from a price readout into a **scanner tile**:
+  - the body **toggles between a 24h price chart and a live order book** — press
+    `Tab` / `Space` (or `c` for chart, `o` for book; `q` quits). The chart is a
+    block-eighths area chart that fills tall panes and degrades to a one-row
+    sparkline; the order book is a depth ladder (bids/asks with size bars)
+    streamed from Gemini's keyless `/v1/book` only while it's on screen.
+  - **richer 24h stats**: a range bar showing where the price sits between the
+    day's low and high, plus the bid/ask spread in basis points — from one added
+    Gemini `v2/ticker` call (the headline % still comes from `pricefeed`).
+  - the tile now **reflows to its pane**: it reads the live size via `stty`,
+    guards autowrap, and degrades the layout by height, so a small or narrow pane
+    no longer scrolls the banner off the top or wraps lines into drift.
+  - prices drop the `$` prefix for non-USD-quoted pairs (e.g. `ethbtc`), so every
+    Gemini pair renders correctly.
 
 ## [1.1.0] - 2026-11-12
 
