@@ -142,36 +142,54 @@ visits every pane exactly once per lap and can never get stuck** — on any
 layout. It also stays immune to pane renumbering and to the `⌥ =` snap. It's
 handled by the helper [`bin/emux-pane-cycle`](bin/emux-pane-cycle).
 
-## Live crypto ticker — `emux-ticker`
+## Live crypto scanner — `emux-ticker`
 
-The start of emux's "finance template": a standalone helper that turns one pane
-into a live price dashboard for a crypto asset. Split panes and run it again to
-watch several at once — tmux becomes a trading desk you drive one-handed.
+emux's **finance template**: a standalone helper that turns one pane into a live
+scanner tile for a crypto asset. Split panes and run it again to watch several at
+once — tmux becomes a trading desk you drive one-handed.
 
 ```sh
 emux-ticker btcusd        # Bitcoin
 emux-ticker ethusd 10     # Ethereum, refresh 24h stats every 10s
 ```
 
-Each pane shows a big figlet banner of the ticker (green when up on the day, red
-when down), the price, the 24h % change, and 24h volume in USD:
+Each tile shows a figlet banner (green up / red down), the live price, the
+24h % change, a **24h range bar** marking where price sits between the day's low
+and high, the **bid/ask spread**, 24h volume, and a body that **toggles between a
+price chart and a live order book** — tap `Tab` or `Space`:
 
 ```
- ____ _____ ____
-| __ )_   _/ ___|
-|  _ \ | || |
-| |_) || || |___
-|____/ |_| \____|
+ ____ _____ ____                      ____ _____ ____
+| __ )_   _/ ___|                    | __ )_   _/ ___|
+|  _ \ | || |                        |  _ \ | || |
+| |_) || || |___                     | |_) || || |___
+|____/ |_| \____|                    |____/ |_| \____|
 
-  $73,641.30   ▲ +0.64% 24h
-  Vol  $26.98M
-  median · 3/3 live
+  $68,247.99   ▼ -4.35% 24h            $68,247.99   ▼ -4.35% 24h
+  $67,777.00 ├─●────────┤ $71,433.73   $67,777.00 ├─●────────┤ $71,433.73
+  Vol  $27.82M · spread 0.1 bps        Vol  $27.82M · spread 0.1 bps
+         ▁▂   ▂▃▅▃      ▁▇             68398.00  2.500 ███████████████
+   ▂▃▅▆▇▇██▅▃▂████▅▃▂▁▂▅███            68395.93  0.211 ████▍
+  median · 3/3 live · [tab] book       68385.42  0.194 ████
+                                       spread 0.01 (0.0 bps)
+      chart view                       68385.41  0.016 ▍
+                                       68372.00  2.500 ███████████████
+                                       median · 3/3 live · [tab] chart
+                                            order book view
 ```
+
+`c` jumps to the chart, `o` to the book, `q` quits. The order book (bids green,
+asks red, with depth bars) streams from Gemini only while it's on screen.
+
+**Reflows to any pane.** The tile reads its pane size and adapts: the chart grows
+into a filled area chart on tall panes and shrinks to a one-row sparkline on
+short ones, and the banner / stats / body drop in priority order so nothing ever
+scrolls off the top or wraps. Resize the pane and it repaints instantly.
 
 **Why the price is trustworthy.** It streams from **three exchange websockets at
 once** — Gemini, Coinbase and Kraken — and shows the **median of whichever are
 live**. If one vendor stalls or drops it falls out of the median and the health
-line updates (`2/3 live`); when it recovers, `3/3`. The 24h % change and volume
+line updates (`2/3 live`); when it recovers, `3/3`. The 24h stats and order book
 come from Gemini's REST API. Everything is free and needs **no API keys**.
 
 Choose specific sources with `EMUX_VENDORS` (default: all three):
@@ -181,8 +199,8 @@ EMUX_VENDORS=gemini,kraken emux-ticker btcusd
 ```
 
 **Requirements:** `websocat`, `jq`, `figlet` (`brew install websocat jq figlet`).
-Crypto only for now — stocks need licensed real-time data; prediction markets are
-a planned direction.
+Works on any pair Gemini lists (not just USD-quoted). Crypto only for now —
+stocks need licensed real-time data; prediction markets are a planned direction.
 
 ## Versioning
 

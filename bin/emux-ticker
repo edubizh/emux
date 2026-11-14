@@ -1,34 +1,45 @@
 #!/usr/bin/env bash
-# emux-ticker — a live, multi-vendor crypto dashboard for a single tmux pane.
+# emux-ticker — a live, multi-vendor crypto scanner tile for a single tmux pane.
 #
 # (bash, not POSIX sh — it uses a timed `read` so the signal traps that tear
 # down the background feeds fire promptly, and manages several child processes.)
 #
 # Run it inside a pane:  emux-ticker btcusd
-# It shows a big figlet banner of the asset (green when up on the day, red when
-# down), a live price, the 24h % change, 24h volume, and a source-health line.
-# Split panes and run it again with a different pair to watch several assets at
-# once — that is the whole point of hosting it in tmux.
+# It shows a figlet banner (green up / red down), a live price, the 24h % change,
+# a 24h low-high range bar, the bid/ask spread, 24h volume, a source-health line,
+# and a body that toggles (Tab/Space) between a 24h price chart and a live order
+# book. It reflows to the pane size and degrades gracefully when the pane is
+# short or narrow. Split panes and run it again with a different pair to watch
+# several assets at once — that is the whole point of hosting it in tmux.
 #
 # Distributed-systems bit: the price is streamed from SEVERAL exchange
 # websockets at once (Gemini, Coinbase, Kraken) and shown as the MEDIAN of the
 # sources that are currently live. If one vendor drops, it is dropped from the
 # median and the health line shows e.g. "2/3 live"; when it returns, "3/3". All
-# feeds are free and need no API key. 24h %/volume come from Gemini REST.
+# feeds are free and need no API key. The 24h stats, the chart series, and the
+# order book come from Gemini REST.
 #
 # Usage:
 #   emux-ticker <PAIR> [poll_seconds]        e.g. emux-ticker ethusd 15
 # Pick vendors with EMUX_VENDORS (default all): e.g. EMUX_VENDORS=gemini,kraken
+# Keys (inside the pane): Tab/Space toggle chart<->book · c chart · o book · q quit
 #
 # Test hooks (harmless in normal use; used by tests/emux-ticker.sh):
 #   EMUX_PRINT_BASE=1     print the derived base asset (e.g. BTC) and exit
 #   EMUX_PRINT_MEDIAN="a b c"  print the median of those numbers and exit
 #   EMUX_ONCE=1           render one frame from EMUX_PRICE/EMUX_STATE and exit
 #   EMUX_PRICE=<n>        price to render in once-mode
-#   EMUX_STATE="<pct> <vol>"  inject 24h % (decimal) and volume, skipping curl
+#   EMUX_STATE="<pct> <vol> [hi lo bid ask]"  inject polled stats, skipping curl
 #   EMUX_AGG_FIXTURE=<f>  replay "vendor<TAB>price" lines (no network) and exit
 #   EMUX_VENDORS=a,b      restrict/choose price sources
 #   EMUX_LIVE_WINDOW=<s>  seconds a vendor stays "live" after its last price
+#   EMUX_COLS=<n> EMUX_LINES=<n>  force the pane size (else read from the tty)
+#   EMUX_HISTORY="p1 p2 .."  seed the chart's price series (oldest->newest)
+#   EMUX_CHART_H=<n>      force the chart body height (0 hides it)
+#   EMUX_VIEW=chart|book  pick which body the pane renders
+#   EMUX_BOOK='{"a":[..],"b":[..]}'  inject an order book for the book view
+#   EMUX_BOOK_POLL=<s>    order-book refresh interval while in book view (default 2)
+#   EMUX_NO_KEYS=1        disable the raw-mode key reader (no in-pane toggle)
 #   EMUX_NO_COLOR=1       disable ANSI color
 #   EMUX_NO_CLEAR=1       do not emit cursor/clear control codes
 #   EMUX_NO_FIGLET=1      force the plain-text banner fallback
@@ -36,6 +47,7 @@ set -u
 
 UA='Mozilla/5.0'
 API='https://api.gemini.com/v1'
+API2='https://api.gemini.com/v2'
 
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 upper() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]'; }
@@ -46,6 +58,10 @@ if [ -z "$pair_raw" ]; then
 	exit 2
 fi
 poll=${2:-20}
+# A non-numeric or zero poll would make `sleep "$poll"` fail every iteration and
+# hot-spin the poll loop into a silent request storm; fall back to the default.
+case $poll in '' | *[!0-9]*) poll=20 ;; esac
+case $poll in *[1-9]*) ;; *) poll=20 ;; esac
 
 # Split the pair into base + quote (btcusd -> BTC + USD; defaults to USD).
 in=$(lower "$pair_raw" | tr -cd 'a-z0-9') # BTC-USD / btc/usd / junk -> btcusd
@@ -67,6 +83,14 @@ BASE=$(upper "$base")
 QUOTE=$(upper "$quote")
 pair="$base$quote"          # gemini REST/ws symbol, e.g. btcusd
 pair_up="$BASE$QUOTE"       # gemini pricefeed pair, e.g. BTCUSD
+SGN='$'; [ "$QUOTE" = USD ] || SGN='' # money prefix: $ only for USD-quoted pairs
+
+# Polled stat state, owned by the consumer shell (poll_state updates it, or the
+# once/fixture paths seed it). Kept last-good so a flaky poll never blanks a pane.
+s_pct='' s_vol='' s_hi='' s_lo='' s_bid='' s_ask=''
+chart_base=${EMUX_HISTORY:-} # 24h hourly price series for the chart (oldest->newest)
+view=${EMUX_VIEW:-chart}     # which body fills the pane: chart | book
+book_json=${EMUX_BOOK:-}     # latest compact order book {a:[[p,amt]..],b:[..]}
 
 if [ "${EMUX_PRINT_BASE:-}" = 1 ]; then
 	printf '%s\n' "$BASE"
@@ -102,6 +126,7 @@ else
 fi
 if [ "${EMUX_NO_CLEAR:-}" = 1 ]; then
 	C_HOME='' C_EOL='' C_EOS='' ALT_ON='' ALT_OFF='' CUR_HIDE='' CUR_SHOW=''
+	AW_OFF='' AW_ON=''
 else
 	C_HOME=$(printf '\033[H')          # cursor to top-left (redraw in place)
 	C_EOL=$(printf '\033[K')           # clear to end of line
@@ -110,7 +135,13 @@ else
 	ALT_OFF=$(printf '\033[?1049l')    # restore the normal screen on exit
 	CUR_HIDE=$(printf '\033[?25l')     # hide the cursor while streaming
 	CUR_SHOW=$(printf '\033[?25h')
+	AW_OFF=$(printf '\033[?7l')        # autowrap OFF while drawing (truncate, no wrap drift)
+	AW_ON=$(printf '\033[?7h')         # restore autowrap on exit
 fi
+
+# a literal newline, for assembling a whole frame as a single atomic write
+NL='
+'
 
 # --- banner (rendered once, reused every frame) ---
 if [ "${EMUX_NO_FIGLET:-}" != 1 ] && command -v figlet >/dev/null 2>&1; then
@@ -118,6 +149,15 @@ if [ "${EMUX_NO_FIGLET:-}" != 1 ] && command -v figlet >/dev/null 2>&1; then
 else
 	BANNER="  $BASE"
 fi
+# Pre-split the banner into lines once, so each redraw can place, clamp and color
+# them individually without re-splitting figlet output on the hot path.
+BANNER_N=0
+while IFS= read -r _bl || [ -n "$_bl" ]; do
+	BANNER_L[BANNER_N]=$_bl
+	BANNER_N=$((BANNER_N + 1))
+done <<EOF
+$BANNER
+EOF
 
 # --- formatting helpers ---
 commafy() { # 74035.8 -> 74,035.80
@@ -147,33 +187,243 @@ abbr() { # 154.46 / 2.00M / 1.23B
 	}'
 }
 
-# render <price> <pct-decimal> <volume> [health]
+# ├──●───┤ bar: where <last> sits within the 24h [<low>,<high>] range (width <w>).
+rangebar() {
+	awk -v last="$1" -v lo="$2" -v hi="$3" -v w="$4" 'BEGIN {
+		if (w < 3) w = 3
+		inner = w - 2
+		if (hi + 0 <= lo + 0) pos = 0.5
+		else { pos = (last - lo) / (hi - lo); if (pos < 0) pos = 0; if (pos > 1) pos = 1 }
+		mark = int(pos * (inner - 1) + 0.5)
+		s = "├"
+		for (i = 0; i < inner; i++) s = s (i == mark ? "●" : "─")
+		printf "%s┤", s
+	}'
+}
+# bid/ask spread in basis points (prints nothing if either side is missing/zero).
+spreadbps() {
+	awk -v b="$1" -v a="$2" 'BEGIN {
+		if (b + 0 <= 0 || a + 0 <= 0) exit
+		mid = (a + b) / 2
+		if (mid <= 0) exit
+		printf "%.1f", (a - b) / mid * 10000
+	}'
+}
+
+# spark <series> <width> <height> — a block-eighths area chart of the price
+# series (height 1 = sparkline, taller = a filled mountain). Byte-safe: the glyph
+# ramp is split on spaces, never split("",...) which mangles UTF-8 on BSD awk.
+spark() {
+	[ -n "$1" ] && [ "${3:-0}" -gt 0 ] || return 0
+	awk -v series="$1" -v width="$2" -v height="$3" 'BEGIN {
+		split("▁ ▂ ▃ ▄ ▅ ▆ ▇ █", ramp, " ")
+		n = split(series, a, " "); if (n == 0) exit
+		if (width < 1) width = 1
+		# Resample the series to exactly <width> columns so the chart always fills
+		# the pane width: linear interpolation stretches it, sampling shrinks it.
+		for (c = 0; c < width; c++) {
+			if (width == 1 || n == 1) { v[c] = a[n] + 0; continue }
+			pos = c * (n - 1) / (width - 1)
+			i0 = int(pos); frac = pos - i0
+			i1 = (i0 + 1 < n) ? i0 + 1 : i0
+			v[c] = a[i0 + 1] * (1 - frac) + a[i1 + 1] * frac
+		}
+		lo = v[0]; hi = v[0]
+		for (c = 0; c < width; c++) { if (v[c] < lo) lo = v[c]; if (v[c] > hi) hi = v[c] }
+		flat = (hi == lo)                           # single point or dead-flat series
+		rng = flat ? 1 : hi - lo                    # avoid /0
+		levels = height * 8
+		for (row = height; row >= 1; row--) {
+			line = ""
+			for (c = 0; c < width; c++) {
+				# a flat series draws a baseline (lowest glyph) rather than blank cells
+				q = flat ? 1 : int((v[c] - lo) / rng * (levels - 1) + 0.5)
+				cell = q - (row - 1) * 8
+				if (cell >= 8) line = line ramp[8]
+				else if (cell <= 0) line = line " "
+				else line = line ramp[cell]
+			}
+			print line
+		}
+	}'
+}
+
+# bookladder <book-json> <width> <height> — asks (red) over bids (green) depth
+# ladder: price | size | a size bar scaled to the largest level shown. Degrades
+# (drop the bar, then the size) on narrow panes; "(book empty)" when there is none.
+bookladder() {
+	[ -n "$1" ] && [ "${3:-0}" -ge 3 ] || return 0
+	printf '%s' "$1" | jq -r '
+		([ (.a // [])[] | "A \(.[0]) \(.[1])" ] + [ (.b // [])[] | "B \(.[0]) \(.[1])" ]) | .[]?
+	' 2>/dev/null | awk -v w="$2" -v h="$3" -v G="$GREEN" -v R="$RED" -v D="$DIM" -v Z="$RESET" '
+		function fsz(x,   v) {
+			v = x + 0
+			if (v >= 1e9) return sprintf("%.2fB", v / 1e9)
+			if (v >= 1e6) return sprintf("%.2fM", v / 1e6)
+			if (v >= 1e3) return sprintf("%.2fK", v / 1e3)
+			if (v >= 1) return sprintf("%.3f", v)      # plain decimals, never 2.5e-05
+			return sprintf("%.4f", v)
+		}
+		function fnum(x,   s) { s = sprintf("%.8f", x + 0); sub(/0+$/, "", s); sub(/\.$/, "", s); return s }
+		function bar(sz,   frac, full, i, s, rem8) {
+			if (bw < 1 || mx <= 0) return ""
+			frac = sz / mx * bw; full = int(frac); s = ""
+			for (i = 0; i < full && i < bw; i++) s = s "█"
+			rem8 = int((frac - full) * 8 + 0.5)
+			if (full < bw && rem8 >= 1) s = s h8[rem8]
+			return s
+		}
+		function emit(clr, price, size,   row) {
+			row = sprintf("  %s%*s%s", clr, pw, price, Z)
+			if (ss) row = row sprintf(" %s%*s%s", D, sw, fsz(size), Z)
+			if (bw > 0) row = row " " clr bar(size) Z
+			print row
+		}
+		BEGIN { na = 0; nb = 0 }
+		$1 == "A" { ap[na] = $2; aa[na] = $3; na++ }
+		$1 == "B" { bp[nb] = $2; ba[nb] = $3; nb++ }
+		END {
+			if (na + nb == 0) { print "  (book empty)"; exit }
+			split("▏ ▎ ▍ ▌ ▋ ▊ ▉ █", h8, " ")
+			lv = int((h - 1) / 2); if (lv < 1) lv = 1
+			la = (na < lv) ? na : lv; lb = (nb < lv) ? nb : lv
+			mx = 0; pw = 0; sw = 0
+			for (i = 0; i < la; i++) { sz = aa[i] + 0; if (sz > mx) mx = sz; if (length(ap[i]) > pw) pw = length(ap[i]); if (length(fsz(sz)) > sw) sw = length(fsz(sz)) }
+			for (i = 0; i < lb; i++) { sz = ba[i] + 0; if (sz > mx) mx = sz; if (length(bp[i]) > pw) pw = length(bp[i]); if (length(fsz(sz)) > sw) sw = length(fsz(sz)) }
+			avail = w - 2
+			ss = (avail >= pw + 1 + sw) ? 1 : 0
+			bw = ss ? (avail - pw - 1 - sw - 1) : 0; if (bw < 1) bw = 0
+			for (i = la - 1; i >= 0; i--) emit(R, ap[i], aa[i])
+			if (la > 0 && lb > 0) {
+				sp = ap[0] - bp[0]; mid = (ap[0] + bp[0]) / 2
+				bps = (mid > 0) ? (sp / mid * 10000) : 0
+				printf "  %sspread %s (%.1f bps)%s\n", D, fnum(sp), bps, Z
+			} else printf "  %s—%s\n", D, Z
+			for (i = 0; i < lb; i++) emit(G, bp[i], ba[i])
+		}'
+}
+
+# --- current pane size (ground truth via stty; tput/$COLUMNS are static here) ---
+# In a real pane stdout is a tty, so ask the terminal line discipline. Under
+# tests/pipes it is not a tty, so fall back to a roomy 80x24 (or an explicit
+# EMUX_COLS/EMUX_LINES override). stty prints "rows cols" (reversed vs tmux).
+get_size() {
+	if [ -n "${EMUX_COLS:-}${EMUX_LINES:-}" ]; then
+		cols=${EMUX_COLS:-80} lines=${EMUX_LINES:-24}
+		return
+	fi
+	_sz=''
+	[ -t 1 ] && { _sz=$(stty size </dev/tty 2>/dev/null) || _sz=''; }
+	case "$_sz" in
+	*[0-9]\ [0-9]*) lines=${_sz%% *} cols=${_sz##* } ;;
+	*) lines=24 cols=80 ;;
+	esac
+	case "$lines" in ''|*[!0-9]*) lines=24 ;; esac
+	case "$cols" in ''|*[!0-9]*) cols=80 ;; esac
+}
+
+# append $1 as one frame line, clamped to the pane height. The frame is emitted
+# as a single write whose LAST line carries no trailing newline, so filling the
+# pane never scrolls the alternate screen (the bug a naive per-line printf hits).
+addline() {
+	[ "$_nlines" -ge "$max_lines" ] && return
+	if [ "$_nlines" -eq 0 ]; then _frame=$1$C_EOL; else _frame=$_frame$NL$1$C_EOL; fi
+	_nlines=$((_nlines + 1))
+}
+
+# render <price> [health] — assemble one reflowed frame from the live price and
+# the polled stat globals; fits the pane and degrades (drop banner/stats) short.
 render() {
 	_price=${1:-}
-	_pct=${2:-}
-	_vol=${3:-}
-	_health=${4:-}
+	_health=${2:-}
 
-	case "$_pct" in
+	case "$s_pct" in
 	'') col=$DIM arrow='·' pctd='—' ;;
-	-*) col=$RED arrow='▼' pctd=$(pctfmt "$_pct") ;;
-	*) col=$GREEN arrow='▲' pctd=$(pctfmt "$_pct") ;;
+	-*) col=$RED arrow='▼' pctd=$(pctfmt "$s_pct") ;;
+	*) col=$GREEN arrow='▲' pctd=$(pctfmt "$s_pct") ;;
 	esac
-	if [ -n "$_price" ]; then priced='$'$(commafy "$_price"); else priced='—'; fi
-	if [ -n "$_vol" ]; then vold='$'$(abbr "$_vol"); else vold='—'; fi
+	if [ -n "$_price" ]; then priced=$SGN$(commafy "$_price"); else priced='—'; fi
+	if [ -n "$s_vol" ]; then vold=$SGN$(abbr "$s_vol"); else vold='—'; fi
 	tf=''
-	[ -n "$_pct" ] && tf=" ${DIM}24h${RESET}" # label the % with its timeframe
+	[ -n "$s_pct" ] && tf=" ${DIM}24h${RESET}" # label the % with its timeframe
 
-	printf '%s%s%s%s\n\n' "$C_HOME" "$col" "$BANNER" "$RESET"
-	printf '  %s%s   %s %s%s%s%s\n' "$col" "$priced" "$arrow" "$pctd" "$RESET" "$tf" "$C_EOL"
-	printf '  %sVol  %s%s%s\n' "$DIM" "$vold" "$RESET" "$C_EOL"
-	[ -n "$_health" ] && printf '  %s%s%s%s\n' "$DIM" "$_health" "$RESET" "$C_EOL"
-	printf '%s' "$C_EOS"
+	get_size
+	_frame='' _nlines=0 max_lines=$lines
+
+	# Banner only when the pane is tall enough for it plus the stat lines;
+	# otherwise drop it first (price line always wins the remaining rows).
+	if [ "$lines" -ge $((BANNER_N + 5)) ]; then
+		_bi=0
+		while [ "$_bi" -lt "$BANNER_N" ]; do
+			addline "$col${BANNER_L[$_bi]}$RESET"
+			_bi=$((_bi + 1))
+		done
+		addline ''
+	fi
+	addline "  $col$priced$RESET   $arrow $pctd$RESET$tf"
+
+	# 24h range: low ├──●──┤ high — the bar flexes to fill the line width.
+	if [ "$lines" -ge 5 ] && [ -n "$_price" ] && [ -n "$s_hi" ] && [ -n "$s_lo" ]; then
+		_lol=$SGN$(commafy "$s_lo")
+		_hil=$SGN$(commafy "$s_hi")
+		_rbw=$((cols - 5 - ${#_lol} - ${#_hil})) # 2 left margin + 2 spaces + 1 right
+		[ "$_rbw" -lt 11 ] && _rbw=11
+		addline "  $DIM$_lol$RESET $col$(rangebar "$_price" "$s_lo" "$s_hi" "$_rbw")$RESET $DIM$_hil$RESET"
+	fi
+
+	# volume, plus the bid/ask spread in bps when we have both sides of the book.
+	if [ "$lines" -ge 2 ]; then
+		_vl="  ${DIM}Vol  $vold"
+		if [ -n "$s_bid" ] && [ -n "$s_ask" ]; then
+			_sp=$(spreadbps "$s_bid" "$s_ask")
+			[ -n "$_sp" ] && _vl="$_vl · spread $_sp bps"
+		fi
+		addline "$_vl$RESET"
+	fi
+
+	# body: the active view fills the rows between the stats and the footer. The
+	# footer (health) is reserved first so the body never pushes it off-screen.
+	_foot=0
+	[ "$lines" -ge 3 ] && [ -n "$_health" ] && _foot=1
+	_bh=$((lines - _nlines - _foot))
+	[ -n "${EMUX_CHART_H:-}" ] && _bh=$EMUX_CHART_H
+	_cw=$((cols - 3)); [ "$_cw" -lt 1 ] && _cw=1 # 2-col left margin + 1-col right
+	if [ "$view" = chart ] && [ "$_bh" -ge 1 ]; then
+		_series=$chart_base
+		[ -n "$_price" ] && _series="$chart_base $_price" # live tip tracks the median
+		_chart=$(spark "$_series" "$_cw" "$_bh")
+		if [ -n "$_chart" ]; then
+			while IFS= read -r _cl; do addline "  $col$_cl$RESET"; done <<EOF
+$_chart
+EOF
+		fi
+	elif [ "$view" = book ] && [ "$_bh" -ge 1 ]; then
+		_ladder=$(bookladder "$book_json" "$cols" "$_bh")
+		if [ -n "$_ladder" ]; then
+			while IFS= read -r _cl; do addline "$_cl"; done <<EOF
+$_ladder
+EOF
+		else
+			addline "  ${DIM}loading order book…$RESET"
+		fi
+	fi
+
+	[ "$_foot" = 1 ] && addline "  $DIM$_health$RESET"
+
+	printf '%s%s%s' "$C_HOME" "$_frame" "$C_EOS"
+}
+
+# seed the stat globals from a space-separated "pct vol [hi lo bid ask]"
+# (once/fixture/test paths); backward compatible with the old 2-field form.
+seed_state() {
+	# shellcheck disable=SC2086
+	set -- $1
+	s_pct=${1:-} s_vol=${2:-} s_hi=${3:-} s_lo=${4:-} s_bid=${5:-} s_ask=${6:-}
 }
 
 if [ "${EMUX_ONCE:-}" = 1 ]; then
-	s=${EMUX_STATE:-}
-	render "${EMUX_PRICE:-}" "${s%% *}" "${s#* }"
+	seed_state "${EMUX_STATE:-}"
+	render "${EMUX_PRICE:-}"
 	exit 0
 fi
 
@@ -199,21 +449,38 @@ v_filter() { # jq filter: raw ws lines -> price
 	esac
 }
 
-# refresh 24h %/volume (from Gemini REST) into the state file
+# Refresh the polled stats from Gemini REST into the stat globals. Each field is
+# kept last-good (overwritten only when the fetch yields a value), so a flaky poll
+# degrades one number to stale rather than blanking the pane. 24h %/volume keep
+# their original sources; v2/ticker adds high/low/open and the bid/ask.
 poll_state() {
 	_pt=$(curl -s --max-time 10 -H "User-Agent: $UA" "$API/pubticker/$pair")
 	_pf=$(curl -s --max-time 10 -H "User-Agent: $UA" "$API/pricefeed")
-	_vol=$(printf '%s' "$_pt" | jq -r --arg q "$QUOTE" '.volume[$q] // empty' 2>/dev/null)
-	_pct=$(printf '%s' "$_pf" | jq -r --arg p "$pair_up" \
+	_tk=$(curl -s --max-time 10 -H "User-Agent: $UA" "$API2/ticker/$pair")
+	_v=$(printf '%s' "$_pt" | jq -r --arg q "$QUOTE" '.volume[$q] // empty' 2>/dev/null)
+	_p=$(printf '%s' "$_pf" | jq -r --arg p "$pair_up" \
 		'.[] | select(.pair == $p) | .percentChange24h // empty' 2>/dev/null)
-	printf '%s\t%s' "$_pct" "$_vol" >"$state_file"
+	_hi=$(printf '%s' "$_tk" | jq -r '.high // empty' 2>/dev/null)
+	_lo=$(printf '%s' "$_tk" | jq -r '.low // empty' 2>/dev/null)
+	_bd=$(printf '%s' "$_tk" | jq -r '.bid // empty' 2>/dev/null)
+	_ak=$(printf '%s' "$_tk" | jq -r '.ask // empty' 2>/dev/null)
+	_ch=$(printf '%s' "$_tk" | jq -r '(.changes // []) | reverse | @tsv' 2>/dev/null | tr '\t' ' ')
+	[ -n "$_p" ] && s_pct=$_p
+	[ -n "$_v" ] && s_vol=$_v
+	[ -n "$_hi" ] && s_hi=$_hi
+	[ -n "$_lo" ] && s_lo=$_lo
+	[ -n "$_bd" ] && s_bid=$_bd
+	[ -n "$_ak" ] && s_ask=$_ak
+	[ -n "$_ch" ] && chart_base=$_ch
+	return 0 # best-effort: an empty last field must not gate the caller's repaint
 }
 
 # tmp workspace + cleanup
 tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/emux-ticker.XXXXXX") || exit 1
-state_file="$tmpdir/state"
-: >"$state_file"
 tab=$(printf '\t')
+view_file="$tmpdir/view" # the book poller watches this so it only fetches in book view
+printf '%s' "$view" >"$view_file"
+book_file="$tmpdir/book" # the poller drops the book here; the fifo carries only a sentinel
 producer_pids=''
 
 killtree() {
@@ -222,11 +489,18 @@ killtree() {
 }
 cleaned=0
 alt=0
+stty_saved='' raw=0 # raw-mode key-reader state (set in the key-reader block below)
+restore_tty() {     # put the terminal back into cooked mode (no-op unless raw)
+	[ "$raw" = 1 ] || return 0
+	[ -n "$stty_saved" ] && stty "$stty_saved" </dev/tty 2>/dev/null
+	raw=0
+}
 cleanup() {
-	trap '' INT TERM HUP # a mashed Ctrl-C must not preempt teardown mid-way
+	trap '' INT TERM HUP WINCH # a mashed Ctrl-C / resize must not preempt teardown
 	[ "$cleaned" = 1 ] && return
 	cleaned=1
-	[ "$alt" = 1 ] && printf '%s' "$CUR_SHOW$ALT_OFF" # restore the normal screen
+	restore_tty # cooked tty FIRST, so even an interrupted teardown leaves a usable shell
+	[ "$alt" = 1 ] && printf '%s' "$CUR_SHOW$AW_ON$ALT_OFF" # restore screen + autowrap
 	unset IFS       # the signal can land mid-parse (IFS=,) — restore splitting
 	exec 2>/dev/null # hush bash's "Killed" job notices as we reap the feeds
 	# Freeze every feed loop FIRST so none can respawn a websocat mid-teardown,
@@ -269,16 +543,18 @@ draw_agg() {
 	IFS=$oifs
 	# shellcheck disable=SC2086
 	med=$(median $prices)
-	_s=$(<"$state_file")
-	render "$med" "${_s%%"$tab"*}" "${_s##*"$tab"}" "median · $live/$total live"
+	_hint=''
+	if [ "$raw" = 1 ]; then
+		if [ "$view" = chart ]; then _hint=' · [tab] book'; else _hint=' · [tab] chart'; fi
+	fi
+	render "$med" "median · $live/$total live$_hint"
 }
 
 live_window=${EMUX_LIVE_WINDOW:-10}
 
 # Offline hook: replay captured "vendor<TAB>price" lines, no network. (tests)
 if [ -n "${EMUX_AGG_FIXTURE:-}" ]; then
-	[ -n "${EMUX_STATE:-}" ] &&
-		printf '%s\t%s' "${EMUX_STATE%% *}" "${EMUX_STATE#* }" >"$state_file"
+	[ -n "${EMUX_STATE:-}" ] && seed_state "$EMUX_STATE"
 	src="$EMUX_AGG_FIXTURE"
 else
 	src="$tmpdir/out"
@@ -339,7 +615,46 @@ else
 	) >"$src" 2>/dev/null &
 	producer_pids="$producer_pids $!"
 
-	printf '%s' "$ALT_ON$CUR_HIDE" # give the dashboard its own isolated screen
+	# a BOOK poller refreshes the order book, but ONLY while the book view is
+	# active (it watches $view_file) — no book traffic at all while the chart shows.
+	book_poll=${EMUX_BOOK_POLL:-2}
+	case $book_poll in '' | *[!0-9]*) book_poll=2 ;; esac
+	case $book_poll in *[1-9]*) ;; *) book_poll=2 ;; esac
+	(
+		while :; do
+			if [ "$(<"$view_file")" = book ]; then
+				_bk=$(curl -s --max-time 5 -H "User-Agent: $UA" \
+					"$API/book/$pair?limit_bids=20&limit_asks=20" |
+					jq -c '{a: [.asks[] | [.price, .amount]], b: [.bids[] | [.price, .amount]]}' 2>/dev/null)
+				# A full book is up to ~1KB — too big to write atomically to the shared
+				# fifo, where it could split and interleave with a concurrent price line.
+				# Drop it in a file (atomic rename) and push only a tiny BOOK sentinel.
+				[ -n "$_bk" ] && printf '%s' "$_bk" >"$tmpdir/book.tmp" &&
+					mv "$tmpdir/book.tmp" "$book_file" && printf 'BOOK\n'
+			fi
+			sleep "$book_poll"
+		done
+	) >"$src" 2>/dev/null &
+	producer_pids="$producer_pids $!"
+
+	# raw-mode key reader (interactive only; skipped under tests/pipes/no-tty). It
+	# opens /dev/tty ONCE on fd 3 — reopening per key wedges bash 3.2 — and injects
+	# KEY<TAB><byte> into the same fifo. ISIG stays on, so Ctrl-C still fires.
+	if [ -t 1 ] && [ -r /dev/tty ] && [ "${EMUX_NO_KEYS:-}" != 1 ]; then
+		stty_saved=$(stty -g </dev/tty 2>/dev/null)
+		if stty -echo -icanon min 1 time 0 </dev/tty 2>/dev/null; then
+			raw=1
+			(
+				exec 3</dev/tty
+				while IFS= read -r -n1 -u 3 _k; do
+					printf 'KEY\t%s\n' "$_k"
+				done
+			) >"$src" 2>/dev/null &
+			producer_pids="$producer_pids $!"
+		fi
+	fi
+
+	printf '%s' "$ALT_ON$CUR_HIDE$AW_OFF" # isolated screen; autowrap off while drawing
 	alt=1
 	trap 'draw_agg' WINCH # repaint immediately when the pane is resized
 	poll_state
@@ -353,6 +668,22 @@ while :; do
 	if IFS= read -r -t 1 line; then
 		case "$line" in
 		POLL) poll_state && draw_agg ;;
+		BOOK)
+			[ -f "$book_file" ] && book_json=$(<"$book_file")
+			[ "$view" = book ] && draw_agg # only repaint if the book is on screen
+			;;
+		KEY*)
+			_k=${line#KEY"$tab"}
+			case "$_k" in
+			' ' | "$tab") if [ "$view" = chart ]; then view=book; else view=chart; fi ;;
+			c | C) view=chart ;;
+			o | O) view=book ;;
+			q | Q) break ;; # clean quit -> falls through to the EXIT trap
+			*) : ;;         # any other key (incl. arrow ESC-sequences) is ignored
+			esac
+			printf '%s' "$view" >"$view_file" # tell the book poller the new view
+			draw_agg
+			;;
 		'') : ;;
 		*)
 			vendor=${line%%"$tab"*}
